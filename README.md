@@ -16,6 +16,7 @@ vman install github.com/ctxcode/valk-jwt
 
 ```rust
 use jwt
+use valk.core
 
 class Session {
     sub: String
