@@ -1,0 +1,43 @@
+use valk.json
+use valk.crypto
+
+/// Signs claims into a token.
+///
+/// `expires_in_seconds` above 0 adds `exp` and `iat`, which is what a session token wants; a
+/// token without `exp` is valid until the secret changes.
+///
+/// ```valk
+/// let claims = json.new_object()
+/// let token = jwt.encode(json.from(.{ "sub" => "user-1" }), secret, jwt.Algorithm.hs256, 3600)
+/// ```
++ fn encode(claims: json.Value, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0)) String {
+    let payload = claims
+    if expires_in_seconds > 0 {
+        let now = now_seconds()
+        payload = payload.set("iat", json.new_int(now.to(int)))
+        payload = payload.set("exp", json.new_int((now + expires_in_seconds).to(int)))
+    }
+
+    let header = json.new_object()
+    let header_value: json.Value = header
+    header_value = header_value.set("alg", json.new_string(algorithm_name(algorithm)))
+    header_value = header_value.set("typ", json.new_string("JWT"))
+
+    let signing_input = base64url_encode(header_value.encode()) + "." + base64url_encode(payload.encode())
+    let signature = crypto.Hmac.sign(hash_of(algorithm), secret, signing_input)
+    return signing_input + "." + base64url_encode(signature)
+}
+
+/// Signs a class or struct of your own into a token, as `json.from` would write it.
+///
+/// ```valk
+/// class Session {
+///     sub: String
+///     role: String
+/// }
+///
+/// let token = jwt.encode_of(Session { sub: "user-1", role: "admin" }, secret, jwt.Algorithm.hs256, 3600)
+/// ```
++ fn encode_of(claims: $T, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0)) String {
+    return encode(json.from(claims), secret, algorithm, expires_in_seconds)
+}

@@ -1,0 +1,179 @@
+use jwt
+use valk.json
+use valk.time
+use valk.crypto
+
+value SECRET ("a-secret-nobody-else-has")
+
+class Session {
+    sub: String
+    role: String
+}
+
+fn claims_of(values: Map[String]) json.Value {
+    let object = json.new_object()
+    let document: json.Value = object
+    each values as value, name {
+        document = document.set(name, json.new_string(value))
+    }
+    return document
+}
+
+test "Signing and reading" {
+    let token = jwt.encode(claims_of(.{ "sub" => "user-1", "role" => "admin" }), SECRET)
+
+    // Three parts, base64url, no padding
+    assert(token.split(".").length == 3)
+    assert(!token.contains("="))
+    assert(!token.contains("+"))
+    assert(!token.contains("/"))
+
+    let claims = jwt.decode(token, SECRET) ! { println(E.message) assert(false) return }
+    assert(claims.subject == "user-1")
+    assert(claims.string("role") == "admin")
+    assert(claims.has("role"))
+    assert(!claims.has("nothing"))
+    assert(claims.data["sub"].string == "user-1")
+
+    // A token of a class of your own, read back into it
+    let session_token = jwt.encode_of(Session { sub: "user-2", role: "member" }, SECRET)
+    let session = jwt.decode_to[Session](session_token, SECRET) ! { println(E.message) assert(false) return }
+    assert(session.sub == "user-2")
+    assert(session.role == "member")
+
+    // The other two algorithms
+    let stronger = jwt.encode(claims_of(.{ "sub" => "user-3" }), SECRET, jwt.Algorithm.hs512)
+    let read = jwt.decode(stronger, SECRET, .{ algorithm: jwt.Algorithm.hs512 }) ! { assert(false) return }
+    assert(read.subject == "user-3")
+}
+
+test "A token that was changed is refused" {
+    let token = jwt.encode(claims_of(.{ "sub" => "user-1", "role" => "member" }), SECRET)
+    let parts = token.split(".")
+
+    // Another secret does not verify it
+    jwt.decode(token, "another-secret") ! {
+        assert(error_is(E.code, signature))
+    }
+
+    // Claims that were rewritten, with the signature left as it was
+    let tampered = json.new_object()
+    let document: json.Value = tampered
+    document = document.set("sub", json.new_string("user-1"))
+    document = document.set("role", json.new_string("admin"))
+    let forged = (parts.get(0) !? "") + "." + jwt.base64url_encode(document.encode()) + "." + (parts.get(2) !? "")
+    jwt.decode(forged, SECRET) ! {
+        assert(error_is(E.code, signature))
+    }
+
+    // A token that says it is unsigned
+    let header = json.new_object()
+    let header_value: json.Value = header
+    header_value = header_value.set("alg", json.new_string("none"))
+    header_value = header_value.set("typ", json.new_string("JWT"))
+    let unsigned = jwt.base64url_encode(header_value.encode()) + "." + jwt.base64url_encode(document.encode()) + "."
+    jwt.decode(unsigned, SECRET) ! {
+        assert(error_is(E.code, algorithm))
+        assert(E.message.contains("none"))
+    }
+
+    // A token signed with another algorithm than the one expected
+    let other = jwt.encode(claims_of(.{ "sub" => "user-1" }), SECRET, jwt.Algorithm.hs512)
+    jwt.decode(other, SECRET) ! {
+        assert(error_is(E.code, algorithm))
+    }
+
+    // Nonsense
+    jwt.decode("not-a-token", SECRET) ! {
+        assert(error_is(E.code, syntax))
+    }
+    jwt.decode("a.b.c", SECRET) ! {
+        assert(error_is(E.code, syntax))
+        return
+    }
+    assert(false)
+}
+
+test "Expiry" {
+    let now = time.unix_ms() / 1000
+
+    // A token with a lifetime carries iat and exp
+    let token = jwt.encode(claims_of(.{ "sub" => "user-1" }), SECRET, jwt.Algorithm.hs256, 3600)
+    let claims = jwt.decode(token, SECRET) ! { println(E.message) assert(false) return }
+    assert(claims.expires_at >= now + 3599)
+    assert(claims.issued_at >= now - 5)
+    assert(!claims.is_expired())
+
+    // One that expired an hour ago
+    let old = json.new_object()
+    let document: json.Value = old
+    document = document.set("sub", json.new_string("user-1"))
+    document = document.set("exp", json.new_int((now - 3600).to(int)))
+    let expired = jwt.encode(document, SECRET)
+    jwt.decode(expired, SECRET) ! {
+        assert(error_is(E.code, expired))
+    }
+    // Leeway does not stretch that far, but a second of clock difference is forgiven
+    let just_gone = document.set("exp", json.new_int((now - 1).to(int)))
+    jwt.decode(jwt.encode(just_gone, SECRET), SECRET, .{ leeway_seconds: 30 }) ! {
+        println(E.message)
+        assert(false)
+        return
+    }
+
+    // One that is not valid yet
+    let future = document.set("exp", json.new_int((now + 3600).to(int)))
+    future = future.set("nbf", json.new_int((now + 600).to(int)))
+    jwt.decode(jwt.encode(future, SECRET), SECRET) ! {
+        assert(error_is(E.code, not_yet_valid))
+    }
+
+    // A token without exp is accepted, unless the caller says otherwise
+    let forever = jwt.encode(claims_of(.{ "sub" => "user-1" }), SECRET)
+    assert((jwt.decode(forever, SECRET) ! { assert(false) return }).expires_at == 0)
+    jwt.decode(forever, SECRET, .{ require_expiry: true }) ! {
+        assert(error_is(E.code, claim))
+        return
+    }
+    assert(false)
+}
+
+test "Audience and issuer" {
+    let document: json.Value = json.new_object()
+    document = document.set("sub", json.new_string("user-1"))
+    document = document.set("aud", json.new_string("the-api"))
+    document = document.set("iss", json.new_string("the-login-service"))
+    let token = jwt.encode(document, SECRET)
+
+    let claims = jwt.decode(token, SECRET, .{ audience: "the-api", issuer: "the-login-service" }) ! {
+        println(E.message)
+        assert(false)
+        return
+    }
+    assert(claims.audience == "the-api")
+    assert(claims.issuer == "the-login-service")
+
+    jwt.decode(token, SECRET, .{ audience: "another-api" }) ! {
+        assert(error_is(E.code, claim))
+        assert(E.message.contains("another-api"))
+    }
+    jwt.decode(token, SECRET, .{ issuer: "someone-else" }) ! {
+        assert(error_is(E.code, claim))
+        return
+    }
+    assert(false)
+}
+
+test "Reading a token without checking it" {
+    let token = jwt.encode(claims_of(.{ "sub" => "user-1", "iss" => "the-login-service" }), SECRET)
+
+    // No secret needed, and no promises made
+    let claims = jwt.decode_unverified(token) ! { assert(false) return }
+    assert(claims.subject == "user-1")
+    assert(claims.issuer == "the-login-service")
+
+    // Even a token nobody signed reads
+    let unsigned = jwt.base64url_encode("{\"alg\":\"none\"}") + "." + jwt.base64url_encode("{\"sub\":\"whoever\"}") + "."
+    let anything = jwt.decode_unverified(unsigned) ! { assert(false) return }
+    assert(anything.subject == "whoever")
+}

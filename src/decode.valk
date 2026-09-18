@@ -1,0 +1,111 @@
+use valk.json
+use valk.crypto
+
+/// Reads a token, checks its signature, and returns what it says.
+///
+/// The signature is checked against the algorithm the caller expects, not against the one the
+/// token names: a token cannot choose how it is verified, which is the mistake `alg: none`
+/// attacks are built on. `exp` and `nbf` are checked as well, and the audience and issuer when
+/// `options` names them.
+///
+/// ```valk
+/// let claims = jwt.decode(token, secret) ! {
+///     if error_is(E.code, expired) : return "your session has ended"
+///     return "that token is not valid"
+/// }
+/// ```
++ fn decode(token: String, secret: String, options: Options (.{})) Claims !Error {
+    let parts = token.split(".")
+    if parts.length != 3 {
+        throw .syntax { message: "A token is three parts separated by dots, this one has " + parts.length }
+    }
+    let header_text = parts.get(0) !? ""
+    let payload_text = parts.get(1) !? ""
+    let signature_text = parts.get(2) !? ""
+
+    // The header says which algorithm the token claims to use; it is only trusted to disagree
+    let header = json.decode(base64url_decode(header_text) !>) ! {
+        throw .syntax { message: "The header of this token is not valid JSON" }
+    }
+    let named = header.get("alg").string_value() !? ""
+    let expected = algorithm_name(options.algorithm)
+    if named != expected {
+        throw .algorithm { message: "This token is signed with '" + named + "' where '" + expected + "' was expected" }
+    }
+
+    let signing_input = header_text + "." + payload_text
+    let signature = base64url_decode(signature_text) !>
+    if !crypto.Hmac.verify(hash_of(options.algorithm), secret, signing_input, signature) {
+        throw .signature { message: "The signature of this token does not belong to it" }
+    }
+
+    let claims = read_claims(payload_text) !>
+    check_claims(claims, options) !>
+    return claims
+}
+
+/// Reads a token into a class or struct of your own, checking it the way `decode` does.
++ fn decode_to[T](token: String, secret: String, options: Options (.{})) T !Error {
+    let claims = decode(token, secret, options) !>
+    return claims.to_type[T]() !>
+}
+
+/// Reads what a token says without checking anything at all.
+///
+/// Nothing that comes out of this may be trusted: anyone can write a token. It is for looking at
+/// a token you already refused, or for reading the `iss` of one before you know which secret to
+/// check it with.
++ fn decode_unverified(token: String) Claims !Error {
+    let parts = token.split(".")
+    if parts.length != 3 {
+        throw .syntax { message: "A token is three parts separated by dots, this one has " + parts.length }
+    }
+    return read_claims(parts.get(1) !? "") !>
+}
+
+fn read_claims(payload_text: String) Claims !Error {
+    let data = json.decode(base64url_decode(payload_text) !>) ! {
+        throw .syntax { message: "The claims of this token are not valid JSON" }
+    }
+    return Claims {
+        issuer: data.get("iss").string_value() !? ""
+        subject: data.get("sub").string_value() !? ""
+        audience: data.get("aud").string_value() !? ""
+        id: data.get("jti").string_value() !? ""
+        expires_at: claim_seconds(data, "exp")
+        not_before: claim_seconds(data, "nbf")
+        issued_at: claim_seconds(data, "iat")
+        data: data
+    }
+}
+
+// A time claim is a number of seconds; anything else counts as absent
+fn claim_seconds(data: json.Value, name: String) uint {
+    let value = data.get(name).int_value() !? 0
+    if value < 0 : return 0
+    return value.to(uint)
+}
+
+fn check_claims(claims: Claims, options: Options) !Error {
+    let now = now_seconds()
+    let leeway = options.leeway_seconds
+
+    if claims.expires_at > 0 {
+        if now > claims.expires_at + leeway {
+            throw .expired { message: "This token expired at " + claims.expires_at }
+        }
+    } else if options.require_expiry {
+        throw .claim { message: "This token has no 'exp', which is required here" }
+    }
+
+    if claims.not_before > 0 && now + leeway < claims.not_before {
+        throw .not_yet_valid { message: "This token is not valid before " + claims.not_before }
+    }
+
+    if options.audience.length > 0 && claims.audience != options.audience {
+        throw .claim { message: "This token is for '" + claims.audience + "', not for '" + options.audience + "'" }
+    }
+    if options.issuer.length > 0 && claims.issuer != options.issuer {
+        throw .claim { message: "This token is from '" + claims.issuer + "', not from '" + options.issuer + "'" }
+    }
+}

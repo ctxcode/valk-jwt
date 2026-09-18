@@ -1,0 +1,18 @@
+/// Thrown when a token cannot be read or cannot be trusted.
+///
+/// - `syntax`: the token is not three parts separated by dots, or a part is not valid base64url
+///   or not valid JSON.
+/// - `signature`: the signature does not belong to this token and this secret. A token that was
+///   changed by anyone reaches you as this.
+/// - `algorithm`: the token was signed with another algorithm than the one asked for, `none`
+///   included.
+/// - `expired`: `exp` has passed.
+/// - `not_yet_valid`: `nbf` lies in the future.
+/// - `claim`: a claim the caller asked for is missing or is not what it asked for, such as an
+///   audience or an issuer that does not match.
+///
+/// Every one of these means the token must be refused; they are apart so that a program can
+/// tell an expired session from a forged one.
++ error Error (syntax, signature, algorithm, expired, not_yet_valid, claim) payload {
+    message: String
+}

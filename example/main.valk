@@ -1,0 +1,35 @@
+use jwt
+
+class Session {
+    sub: String
+    role: String
+}
+
+fn main() {
+    let secret = "a-secret-nobody-else-has"
+
+    // A token for a session, valid for an hour
+    let token = jwt.encode_of(Session { sub: "user-1", role: "admin" }, secret, jwt.Algorithm.hs256, 3600)
+    println("token: " + token)
+
+    // Reading it back, checking the signature and the time
+    let claims = jwt.decode(token, secret) ! panic("%{E.message}")
+    println("subject: " + claims.subject)
+    println("role: " + claims.string("role"))
+    println("expires at: " + claims.expires_at)
+
+    // Straight into the class it was made from
+    let session = jwt.decode_to[Session](token, secret) ! panic("%{E.message}")
+    println("read back: " + session.sub + ", " + session.role)
+
+    // A token that was changed on the way is refused
+    let tampered = token.range(0, token.length - 4) + "AAAA"
+    jwt.decode(tampered, secret) ! {
+        println("refused: " + E.message)
+    }
+
+    // And so is one signed with another secret
+    jwt.decode(jwt.encode_of(Session { sub: "nobody", role: "admin" }, "not-the-secret"), secret) ! {
+        println("refused: " + E.message)
+    }
+}

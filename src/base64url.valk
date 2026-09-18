@@ -1,0 +1,36 @@
+use valk.crypto
+
+// JWT writes its parts in base64url without padding: `+` and `/` become `-` and `_`, and the
+// `=` at the end is left off.
+
+/// Writes bytes the way a token writes them: base64url, without the `=` padding.
+///
+/// Every part of a token is written this way, so a program that builds a header of its own, or
+/// reads a key out of a JWK, needs the same encoding.
++ fn base64url_encode(data: String) String {
+    let text = crypto.base64_encode(data)
+    let out = ByteBuffer.new(text.length)
+    each text as ch {
+        if ch == '=' : continue
+        if ch == '+' : out.write_byte('-')
+        else if ch == '/' : out.write_byte('_')
+        else : out.write_byte(ch)
+    }
+    return out.to_string()
+}
+
+/// Reads base64url, with or without the padding. Throws `syntax` when the text is not that.
++ fn base64url_decode(text: String) String !Error {
+    let out = ByteBuffer.new(text.length + 4)
+    each text as ch {
+        if ch == '-' : out.write_byte('+')
+        else if ch == '_' : out.write_byte('/')
+        else if ch == '=' : continue
+        else : out.write_byte(ch)
+    }
+    // The padding the encoder left off
+    while out.length % 4 != 0 : out.write_byte('=')
+    return crypto.base64_decode(out) ! {
+        throw .syntax { message: "A part of the token is not valid base64url" }
+    }
+}

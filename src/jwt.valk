@@ -1,0 +1,109 @@
+use valk.crypto
+use valk.json
+use valk.time
+
+/// The algorithms this package signs and verifies with.
+///
+/// These are the HMAC ones, where signing and verifying use the same secret. The RSA and ECDSA
+/// algorithms, where a public key verifies what a private key signed, are not supported yet.
++ enum Algorithm {
+    hs256
+    hs384
+    hs512
+}
+
+/// What a token says.
+///
+/// The claims the standard names are read into their own fields; `data` holds the whole object,
+/// including whatever else was put in it.
+///
+/// ```valk
+/// let claims = jwt.decode(token, secret) ! panic("%{E.message}")
+/// println(claims.subject)                       // "sub"
+/// println(claims.data["role"].string)           // a claim of your own
+/// ```
++ class Claims {
+    /// `iss`: who made the token.
+    + issuer: String ("")
+    /// `sub`: who the token is about.
+    + subject: String ("")
+    /// `aud`: who the token is for.
+    + audience: String ("")
+    /// `jti`: the id of the token.
+    + id: String ("")
+    /// `exp`: the second after which the token is no longer valid, or 0 when it never expires.
+    + expires_at: uint (0)
+    /// `nbf`: the second before which the token is not valid yet, or 0.
+    + not_before: uint (0)
+    /// `iat`: the second the token was made, or 0.
+    + issued_at: uint (0)
+    /// Everything the token says, the claims above included.
+    + data: json.Value
+
+    /// Returns a claim by name, json null when it is not there.
+    + fn get(name: String) json.Value {
+        return this.data.get(name)
+    }
+    /// Returns a claim as text, or "" when it is not there.
+    + fn string(name: String) String {
+        return this.data.get(name).string_value() !? ""
+    }
+    /// Returns a claim as a number, or 0.
+    + fn int(name: String) int {
+        return this.data.get(name).int_value() !? 0
+    }
+    /// Returns a claim as a bool, or false.
+    + fn bool(name: String) bool {
+        return this.data.get(name).bool_value() !? false
+    }
+    /// Returns whether the token says anything about this claim.
+    + fn has(name: String) bool {
+        return this.data.has(name)
+    }
+
+    /// Returns whether the token is expired, allowing for `leeway_seconds` of clock difference.
+    + fn is_expired(leeway_seconds: uint (0)) bool {
+        if this.expires_at == 0 : return false
+        return now_seconds() > this.expires_at + leeway_seconds
+    }
+
+    /// Reads the claims into a class or struct of your own, as `json.Value.to_type` does.
+    + fn to_type[T]() T !Error {
+        return this.data.to_type[T]() ! {
+            throw .claim { message: "The claims of this token do not fit the type they were read into" }
+        }
+    }
+}
+
+/// What a token has to satisfy to be accepted.
+///
+/// The algorithm is checked against what the caller expects rather than against what the token
+/// says, which is what keeps a token from choosing how it is verified.
++ class Options {
+    /// The algorithm the token must be signed with.
+    + algorithm: Algorithm (Algorithm.hs256)
+    /// How much clock difference to allow when checking `exp` and `nbf`, in seconds.
+    + leeway_seconds: uint (0)
+    /// The audience the token must carry, or "" to accept any.
+    + audience: String ("")
+    /// The issuer the token must carry, or "" to accept any.
+    + issuer: String ("")
+    /// Whether a token without `exp` is refused.
+    + require_expiry: bool (false)
+}
+
+fn now_seconds() uint {
+    return time.unix_ms() / 1000
+}
+
+fn algorithm_name(algorithm: Algorithm) String {
+    if algorithm == Algorithm.hs384 : return "HS384"
+    if algorithm == Algorithm.hs512 : return "HS512"
+    return "HS256"
+}
+
+fn hash_of(algorithm: Algorithm) crypto.HashAlgorithm {
+    if algorithm == Algorithm.hs384 : return crypto.HashAlgorithm.sha384
+    if algorithm == Algorithm.hs512 : return crypto.HashAlgorithm.sha512
+    return crypto.HashAlgorithm.sha256
+}
