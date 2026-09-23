@@ -11,14 +11,14 @@ Namespaces: [main](#main)
 
 ```js
 // Thrown when a token cannot be read or cannot be trusted.
-+ error Error (syntax, signature, algorithm, expired, not_yet_valid, claim) payload { message: String }
++ error Error (syntax, signature, algorithm, expired, not_yet_valid, claim, key) payload { message: String }
 ```
 
 ## Enums for 'main'
 
 ```js
 // The algorithms this package signs and verifies with.
-+ enum Algorithm { hs256, hs384, hs512 }
++ enum Algorithm { hs256, hs384, hs512, rs256, rs384, rs512, ps256, ps384, ps512, es256, es384, es512, eddsa }
 ```
 
 ## Functions for 'main'
@@ -38,6 +38,16 @@ Namespaces: [main](#main)
 + fn encode(claims: Value, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0)) String
 // Signs a class or struct of your own into a token, as `json.from` would write it.
 + fn encode_of(claims: $T, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0)) String
+// Signs claims into a token with a private key, for the RSA, ECDSA and EdDSA algorithms.
++ fn sign(claims: Value, key: PrivateKey, algorithm: Algorithm, expires_in_seconds: uint (0), key_id: String ("")) String !Error
+// Signs a class or struct of your own into a token with a private key; see `sign`.
++ fn sign_of(claims: $T, key: PrivateKey, algorithm: Algorithm, expires_in_seconds: uint (0), key_id: String ("")) String !Error
+// Reads a token, checks its signature with a public key, and returns what it says.
++ fn verify(token: String, key: PublicKey, options: Options) Claims !Error
+// Reads a token into a class or struct of your own, checking it the way `verify` does.
++ fn verify_to[T](token: String, key: PublicKey, options: Options) T !Error
+// Checks a token with the key its `kid` names in `keys`, as `verify` checks it with one key.
++ fn verify_with_keys(token: String, keys: KeySet, options: Options) Claims !Error
 ```
 
 ## Classes for 'main'
@@ -76,6 +86,20 @@ Namespaces: [main](#main)
     + fn string(name: String) String
     // Reads the claims into a class or struct of your own, as `json.Value.to_type` does.
     + fn to_type[T]() T !Error
+}
+```
+
+```js
+// Public keys by key id, as an OAuth or OpenID Connect provider publishes them in a JWKS document, for `verify_with_keys`.
++ class KeySet {
+    // Adds `key` under `key_id`, replacing a key with that id.
+    + fn add(key_id: String, key: PublicKey) void
+    // Reads a JWKS document, `{"keys": [...]}`.
+    + static fn from_jwks(text: String) KeySet !Error
+    // Returns the key with id `key_id`, or null.
+    + fn get(key_id: String) ?PublicKey
+    // Returns the ids of the keys in the set.
+    + fn key_ids() Array[String]
 }
 ```
 

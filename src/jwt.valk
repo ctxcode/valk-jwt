@@ -4,12 +4,24 @@ use valk.time
 
 /// The algorithms this package signs and verifies with.
 ///
-/// These are the HMAC ones, where signing and verifying use the same secret. The RSA and ECDSA
-/// algorithms, where a public key verifies what a private key signed, are not supported yet.
+/// The HMAC ones (`hs*`) sign and verify with one secret, through `encode` and `decode`. The
+/// others sign with a private key and verify with its public key, through `sign` and
+/// `verify`: RSA with PKCS#1 v1.5 (`rs*`) or PSS padding (`ps*`), ECDSA on P-256, P-384 and
+/// P-521 (`es256`, `es384`, `es512`), and Ed25519 (`eddsa`).
 + enum Algorithm {
     hs256
     hs384
     hs512
+    rs256
+    rs384
+    rs512
+    ps256
+    ps384
+    ps512
+    es256
+    es384
+    es512
+    eddsa
 }
 
 /// What a token says.
@@ -99,7 +111,57 @@ fn now_seconds() uint {
 fn algorithm_name(algorithm: Algorithm) String {
     if algorithm == Algorithm.hs384 : return "HS384"
     if algorithm == Algorithm.hs512 : return "HS512"
+    if algorithm == Algorithm.rs256 : return "RS256"
+    if algorithm == Algorithm.rs384 : return "RS384"
+    if algorithm == Algorithm.rs512 : return "RS512"
+    if algorithm == Algorithm.ps256 : return "PS256"
+    if algorithm == Algorithm.ps384 : return "PS384"
+    if algorithm == Algorithm.ps512 : return "PS512"
+    if algorithm == Algorithm.es256 : return "ES256"
+    if algorithm == Algorithm.es384 : return "ES384"
+    if algorithm == Algorithm.es512 : return "ES512"
+    if algorithm == Algorithm.eddsa : return "EdDSA"
     return "HS256"
+}
+
+fn is_hmac(algorithm: Algorithm) bool {
+    return algorithm == Algorithm.hs256 || algorithm == Algorithm.hs384 || algorithm == Algorithm.hs512
+}
+
+fn is_ecdsa(algorithm: Algorithm) bool {
+    return algorithm == Algorithm.es256 || algorithm == Algorithm.es384 || algorithm == Algorithm.es512
+}
+
+fn signature_algorithm(algorithm: Algorithm) crypto.SignatureAlgorithm {
+    if algorithm == Algorithm.rs384 : return crypto.SignatureAlgorithm.rsa_pkcs1_sha384
+    if algorithm == Algorithm.rs512 : return crypto.SignatureAlgorithm.rsa_pkcs1_sha512
+    if algorithm == Algorithm.ps256 : return crypto.SignatureAlgorithm.rsa_pss_sha256
+    if algorithm == Algorithm.ps384 : return crypto.SignatureAlgorithm.rsa_pss_sha384
+    if algorithm == Algorithm.ps512 : return crypto.SignatureAlgorithm.rsa_pss_sha512
+    if algorithm == Algorithm.es256 : return crypto.SignatureAlgorithm.ecdsa_sha256
+    if algorithm == Algorithm.es384 : return crypto.SignatureAlgorithm.ecdsa_sha384
+    if algorithm == Algorithm.es512 : return crypto.SignatureAlgorithm.ecdsa_sha512
+    if algorithm == Algorithm.eddsa : return crypto.SignatureAlgorithm.ed25519
+    return crypto.SignatureAlgorithm.rsa_pkcs1_sha256
+}
+
+// The curve an ES algorithm is defined on, and its size in bits
+fn ec_curve(algorithm: Algorithm) crypto.Curve {
+    if algorithm == Algorithm.es384 : return crypto.Curve.p384
+    if algorithm == Algorithm.es512 : return crypto.Curve.p521
+    return crypto.Curve.p256
+}
+fn ec_bits(algorithm: Algorithm) uint {
+    if algorithm == Algorithm.es384 : return 384
+    if algorithm == Algorithm.es512 : return 521
+    return 256
+}
+
+// Whether a key of `key_type` and `bits` can sign or verify with `algorithm`
+fn key_fits(algorithm: Algorithm, key_type: crypto.KeyType, bits: uint) bool {
+    if algorithm == Algorithm.eddsa : return key_type == crypto.KeyType.ed25519
+    if is_ecdsa(algorithm) : return key_type == crypto.KeyType.ec && bits == ec_bits(algorithm)
+    return key_type == crypto.KeyType.rsa
 }
 
 fn hash_of(algorithm: Algorithm) crypto.HashAlgorithm {

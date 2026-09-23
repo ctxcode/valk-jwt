@@ -1,0 +1,143 @@
+use jwt
+use valk.json
+use valk.crypto
+
+// Tokens and keys made with Python's `cryptography` package, an implementation of its own
+
+fn options_for(algorithm: jwt.Algorithm) jwt.Options {
+    return jwt.Options { algorithm: algorithm }
+}
+
+fn key_claims() json.Value {
+    return json.from(Map[String]{ "sub" => "valk" })
+}
+
+fn fails_with(token: String, key: crypto.PublicKey, algorithm: jwt.Algorithm) String {
+    jwt.verify(token, key, options_for(algorithm)) ! {
+        if error_is(E.code, signature) : return "signature"
+        if error_is(E.code, algorithm) : return "algorithm"
+        if error_is(E.code, key) : return "key"
+        return "other"
+    }
+    return "accepted"
+}
+
+test "Keys: tokens signed by another implementation verify" {
+    let rsa = crypto.PublicKey.from_pem(PY_RSA_PUBLIC) !!
+    let rsa_tokens = Array[String]{ PY_RS256, PY_RS384, PY_RS512, PY_PS256, PY_PS384, PY_PS512 }
+    let rsa_algorithms = Array[jwt.Algorithm]{ jwt.Algorithm.rs256, jwt.Algorithm.rs384, jwt.Algorithm.rs512, jwt.Algorithm.ps256, jwt.Algorithm.ps384, jwt.Algorithm.ps512 }
+    let i: uint = 0
+    while i < rsa_tokens.length {
+        let claims = jwt.verify(rsa_tokens[i], rsa, options_for(rsa_algorithms[i])) ! { println(E.message) assert(false) return }
+        assert(claims.subject == "python" && claims.string("role") == "reader")
+        i++
+    }
+    let es = crypto.PublicKey.from_pem(PY_ES256_PUBLIC) !!
+    assert((jwt.verify(PY_ES256, es, options_for(jwt.Algorithm.es256)) !!).subject == "python")
+    let ed = crypto.PublicKey.from_pem(PY_ED_PUBLIC) !!
+    assert((jwt.verify(PY_EDDSA, ed, options_for(jwt.Algorithm.eddsa)) !!).subject == "python")
+
+    // The algorithm the caller expects decides, whatever the key could check
+    assert(fails_with(PY_RS256, rsa, jwt.Algorithm.ps256) == "algorithm")
+    assert(fails_with(PY_ES256, rsa, jwt.Algorithm.es256) == "key")
+    assert(fails_with(PY_EDDSA, rsa, jwt.Algorithm.eddsa) == "key")
+}
+
+test "Keys: signing and verifying with every algorithm" {
+    let rsa = crypto.PrivateKey.generate_rsa() !!
+    let keys = Array[crypto.PrivateKey]{ rsa, rsa, rsa, rsa, rsa, rsa, crypto.PrivateKey.generate_ec(crypto.Curve.p256) !!, crypto.PrivateKey.generate_ec(crypto.Curve.p384) !!, crypto.PrivateKey.generate_ec(crypto.Curve.p521) !!, crypto.PrivateKey.generate_ed25519() !! }
+    let algorithms = Array[jwt.Algorithm]{ jwt.Algorithm.rs256, jwt.Algorithm.rs384, jwt.Algorithm.rs512, jwt.Algorithm.ps256, jwt.Algorithm.ps384, jwt.Algorithm.ps512, jwt.Algorithm.es256, jwt.Algorithm.es384, jwt.Algorithm.es512, jwt.Algorithm.eddsa }
+    let other = crypto.PrivateKey.generate_ec(crypto.Curve.p256) !!
+    let i: uint = 0
+    while i < keys.length {
+        let key = keys[i]
+        let algorithm = algorithms[i]
+        let public = key.public_key() !!
+        let token = jwt.sign(key_claims(), key, algorithm, 3600, "key-1") !!
+        let claims = jwt.verify(token, public, options_for(algorithm)) ! { println(E.message) assert(false) return }
+        assert(claims.subject == "valk" && claims.expires_at > 0)
+        assert(jwt.decode_unverified(token) !! .subject == "valk")
+
+        // Another payload under the same signature
+        let parts = token.split(".")
+        let forged = parts[0] + "." + jwt.base64url_encode("{\"sub\":\"admin\"}") + "." + parts[2]
+        assert(fails_with(forged, public, algorithm) == "signature")
+        i++
+    }
+    // Another key of the right kind: the signature is not its own
+    let es_token = jwt.sign(key_claims(), keys[6], jwt.Algorithm.es256) !!
+    assert(fails_with(es_token, other.public_key() !!, jwt.Algorithm.es256) == "signature")
+
+    // A key that does not fit the algorithm cannot sign or check with it
+    let sign_errors = Array[String]{}
+    jwt.sign(key_claims(), keys[7], jwt.Algorithm.es256) ! { sign_errors.append(error_is(E.code, key) ? "key" : "other") }
+    jwt.sign(key_claims(), rsa, jwt.Algorithm.eddsa) ! { sign_errors.append(error_is(E.code, key) ? "key" : "other") }
+    jwt.sign(key_claims(), rsa, jwt.Algorithm.hs256) ! { sign_errors.append(error_is(E.code, algorithm) ? "algorithm" : "other") }
+    assert(sign_errors.length == 3 && sign_errors[0] == "key" && sign_errors[1] == "key" && sign_errors[2] == "algorithm")
+    assert(fails_with(es_token, keys[7].public_key() !!, jwt.Algorithm.es256) == "key")
+}
+
+test "Keys: a public key is never used as an HMAC secret" {
+    let rsa = crypto.PublicKey.from_pem(PY_RSA_PUBLIC) !!
+    // The classic confusion: HS256 over the public key's PEM, as if it were the secret
+    let forged = jwt.encode(json.from(Map[String]{ "sub" => "admin" }), PY_RSA_PUBLIC, jwt.Algorithm.hs256)
+    assert(fails_with(forged, rsa, jwt.Algorithm.rs256) == "algorithm")
+    assert(fails_with(forged, rsa, jwt.Algorithm.hs256) == "algorithm")
+    let refused = false
+    jwt.decode(PY_RS256, PY_RSA_PUBLIC, options_for(jwt.Algorithm.rs256)) ! { refused = error_is(E.code, algorithm) }
+    assert(refused)
+}
+
+test "Keys: key sets from a JWKS document" {
+    let keys = jwt.KeySet.from_jwks(PY_JWKS) !!
+    let ids = keys.key_ids()
+    assert(ids.length == 5)
+    assert(ids.contains("rsa-1") && ids.contains("ec-ES512") && ids.contains("ed-1"))
+    // Encryption keys, symmetric keys and keys without an id are left out
+    assert(!ids.contains("enc-1") && !ids.contains("secret-1"))
+
+    let tokens = Array[String]{ PY_RS256, PY_ES256, PY_ES384, PY_ES512, PY_EDDSA }
+    let algorithms = Array[jwt.Algorithm]{ jwt.Algorithm.rs256, jwt.Algorithm.es256, jwt.Algorithm.es384, jwt.Algorithm.es512, jwt.Algorithm.eddsa }
+    let i: uint = 0
+    while i < tokens.length {
+        let claims = jwt.verify_with_keys(tokens[i], keys, options_for(algorithms[i])) ! { println(E.message) assert(false) return }
+        assert(claims.subject == "python")
+        i++
+    }
+    // rsa-1 is limited to RS256 by its JWK
+    let limited = false
+    jwt.verify_with_keys(PY_PS256, keys, options_for(jwt.Algorithm.ps256)) ! { limited = error_is(E.code, algorithm) }
+    assert(limited)
+
+    let signer = crypto.PrivateKey.generate_ed25519() !!
+    let unknown = false
+    jwt.verify_with_keys(jwt.sign(key_claims(), signer, jwt.Algorithm.eddsa, 0, "nobody") !!, keys, options_for(jwt.Algorithm.eddsa)) ! { unknown = error_is(E.code, key) }
+    assert(unknown)
+    let no_id = false
+    jwt.verify_with_keys(jwt.sign(key_claims(), signer, jwt.Algorithm.eddsa) !!, keys, options_for(jwt.Algorithm.eddsa)) ! { no_id = error_is(E.code, key) }
+    assert(no_id)
+
+    keys.add("mine", signer.public_key() !!)
+    let own = jwt.sign(key_claims(), signer, jwt.Algorithm.eddsa, 0, "mine") !!
+    assert((jwt.verify_with_keys(own, keys, options_for(jwt.Algorithm.eddsa)) !!).subject == "valk")
+
+    let syntax = false
+    jwt.KeySet.from_jwks("{\"no\":\"keys\"}") ! { syntax = error_is(E.code, syntax) }
+    assert(syntax)
+}
+
+value PY_RS256 ("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6InJzYS0xIn0.eyJzdWIiOiJweXRob24iLCJleHAiOjQxMDI0NDQ4MDAsInJvbGUiOiJyZWFkZXIifQ.F0p7teSvGfAjCR-GZse6eev8TpVb_I9QsRREyVnvzTvgH1Zbck4EqeM3C5PcBSrDy8-ug7jJvXYWj13GhHz3fr6EPSJv9n6ivFcAdm8a95BEbZIXlD3pc0tUyN6_hJu5L_erw6OVEJD1pA4f6MUwdjcLoYijcbnlxQ50TqE08KorUJJnup2EH6rx45_8e_L8V1caqNIloOnr8Z2Bg-yWxGd9Z1fBbiiwCfQ7Y4uR_36dLoxLSQolBAV0Mz-Y17sMwg73m1llwdnCFlm2B5TYMqA8IcLdx2sIN04j1wpOy8RxiBCdELAT7c2wZuU_07bB_ZehoKws8adbxIAcPpIIZw")
+value PY_PS256 ("eyJhbGciOiJQUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6InJzYS0xIn0.eyJzdWIiOiJweXRob24iLCJleHAiOjQxMDI0NDQ4MDAsInJvbGUiOiJyZWFkZXIifQ.HfPQde4o0X9xABkS8xTjhVqg_cnYuLbi-boXjJ6DBVDUzEFD4eKeX18IUS9P7bjUJD98T3DPQn1lt70_O0QtrxKUEDx_KzNOa6E5aKb5WrLP8GyNrxDcUuYG1qioDyHEmb5NkZk2rQvCEo7uxXYImzeUZBvAi9RyMEkLH012p26pgV0xWdBrCsN6vdNP25-nMARRG4KrARhtbYLVzsHR8-8TummWrHyh2imX8gLwcUR_gG_Th72Pxcp_pJQYdcyggh-PjQMiFW7qXHUBkc2FgC3hpnKf5xBm8CKjJ1iwbSUbDJ9vuj2d42mAJjB8c-ZIGPPfwcjNSEOzQNMgpi4jGg")
+value PY_RS384 ("eyJhbGciOiJSUzM4NCIsInR5cCI6IkpXVCIsImtpZCI6InJzYS0xIn0.eyJzdWIiOiJweXRob24iLCJleHAiOjQxMDI0NDQ4MDAsInJvbGUiOiJyZWFkZXIifQ.hooZfEteD8DnprGTuC3UyaPXNAbKEckJuFQc2kLiTy-8brpkPHJXgrNA_6tCZsQdt60Iv7rusQAvljwkw8lhvbChc7Q9HnrWc-z1Xdg_ziahndl-Oul89EgGytzh_H-RGmjnsvKQOx9AHjzOMO3lqw4vvhqltFX_1C1CQeOmIiFckhKTdlXPfllyqCWC017nzn2T2eCDqjfMXI2LSAxdMbdWHOikf9wQenb4e-TtmVYHrj8nGMzn1ILLzHv8Tfys-GHJscE5qJh7P-3T69jmEnXGJk5e5sISPQvc8LnyZ5WPt873dZ_nC_aa-joOHHEyeWxfxADHcjfz7gOhDuJoAQ")
+value PY_PS384 ("eyJhbGciOiJQUzM4NCIsInR5cCI6IkpXVCIsImtpZCI6InJzYS0xIn0.eyJzdWIiOiJweXRob24iLCJleHAiOjQxMDI0NDQ4MDAsInJvbGUiOiJyZWFkZXIifQ.PxOk3PC44BAq3g6UKNDVh0Qa92iRVHeJj3P8ExwmY0KmomB1pPMEUl78xkRa62DggR6-GJ0aIyP-DbdcN2cB0M6bIkXarnN27gTJ_trYWoCo2Y7BAsyfQ14OakL1ZA7GcuBeWTqfqf9trQXZuB5_jD56HoVD15K84838To9R17L_l1SY_KN16EVTDPq4yO4iMgX52qHKKwpXcWqInoW2H2KvkfKR94g9VJHlXZ5jIrdxQ3yxskjS_VssatOVo47_JpSzcCGp2XsRnGfH72urTkrdFjPOdnfixczRv7IWTm6EkDH9Niuf7OeQNUDjiZ5w8ri0fGqIk2Rbu3lQOdxdJQ")
+value PY_RS512 ("eyJhbGciOiJSUzUxMiIsInR5cCI6IkpXVCIsImtpZCI6InJzYS0xIn0.eyJzdWIiOiJweXRob24iLCJleHAiOjQxMDI0NDQ4MDAsInJvbGUiOiJyZWFkZXIifQ.Zi-_OaCRMW0iTBbaJm-2YzNsQ73ghFtdAXgKrEIpHKeEBBaSJKq00F8j_W9KlXA-GdVdcKOHypPZaTBGBwtIDWsOcUOm1MwIvdlfbo4Sws1pztGhecnazeTQU-weAyOR5vGBCNQjI_itOzb1CqIbnp6s8y1bj9jk_Jv2RASd0-9eUxDZnBAgfeuP_xb91AK-CbCRwka178KexzBpBWcj4lfD3AgLP44A5bEBN0RymcGvsFKgbbO0BQyhowanAvGLn0NoJLZavOROxWJbxJow_sdNbPzueE9Y90GeGhe6pMK7HY8Xb1D-3vOGM4GttzukyM03ktD0FTjM_Dnffmjo-w")
+value PY_PS512 ("eyJhbGciOiJQUzUxMiIsInR5cCI6IkpXVCIsImtpZCI6InJzYS0xIn0.eyJzdWIiOiJweXRob24iLCJleHAiOjQxMDI0NDQ4MDAsInJvbGUiOiJyZWFkZXIifQ.p-7cImsiUw_HTNAOLug45-psJWgHovXYrUHIfZ9SWBMUgCywrf59AGyS2Nhp6jcLWlQznE8LleSQAbDOLtaRzsChZJ4i8Vp30d-62bm9bSx9tgqPJS0knmBjXmwaCxUc8fXsPDnrAMbrAvnmG_bT055HMkeDMfWnaaZAyiP9cmd1KbF8oG0MmMShNg244GjJX8MmS4y9xA2GyY305_J9KCAx1rWm6ufd-977tOrtmi-dJF2KKYQbi36PwT-U8iv34rBeIOVqNgAyCcbmUVQyjzBJUya83nsKbfjd1wRqWcVZ551k6WmIwFiTCDfuqyOUO11LL5kFKcBIHtBm8gfA9A")
+value PY_ES256 ("eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImVjLUVTMjU2In0.eyJzdWIiOiJweXRob24iLCJleHAiOjQxMDI0NDQ4MDAsInJvbGUiOiJyZWFkZXIifQ.ig9Pj2BOGe9pxRiftCJ-EaMnzQtAvhEbudfuc9ENW43WWQ1YTBCaSsndSDKZdYbldV-otOaIV4ypNmu5cELOQg")
+value PY_ES384 ("eyJhbGciOiJFUzM4NCIsInR5cCI6IkpXVCIsImtpZCI6ImVjLUVTMzg0In0.eyJzdWIiOiJweXRob24iLCJleHAiOjQxMDI0NDQ4MDAsInJvbGUiOiJyZWFkZXIifQ.leB3xrB3fzBagQkLgASFz6vdDYzgU9CXweRKbPYMBAg6lsgYfznhE0NPtEBUpm8q7mB5SIXOzPDTRRDMDTu2slc93X8nlviZmkvPt8kxkf8GhHoSvMpp04tgeu2r3GVV")
+value PY_ES512 ("eyJhbGciOiJFUzUxMiIsInR5cCI6IkpXVCIsImtpZCI6ImVjLUVTNTEyIn0.eyJzdWIiOiJweXRob24iLCJleHAiOjQxMDI0NDQ4MDAsInJvbGUiOiJyZWFkZXIifQ.ADCnMeVkowIIhy0jRfwr6Jbo-MTToMH4zQd9P419xVfQM7pZs6p-CMJol3dPz4R1_YevPW2E4cTLjpb0YfcY9qYSAbF3sbSUAcQxKoPIaol3dfK3gFoIk_ryM5zU9Gujeh8iJQlwBPDk2J6JwF8PZ5WGjn59jFmFPWeSElALw4YsEcoV")
+value PY_EDDSA ("eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCIsImtpZCI6ImVkLTEifQ.eyJzdWIiOiJweXRob24iLCJleHAiOjQxMDI0NDQ4MDAsInJvbGUiOiJyZWFkZXIifQ.U3b8Tt63H11uYuZrfP27PERJdji4vzXb7NPTLadf77vFzSX5kHOVJbotxojbJmgAlJ95V7t4V9V2ALyZZn5rBQ")
+value PY_RSA_PUBLIC ("-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtU7rAMI9p+KnG1QLT5d2\nOjZ524mKZVl8S2rT5VoGACkkjUah9uxjh+ClXB8BLDWUmsXnG2WuMKOMQm62E8su\nd2I1ql+ype0RMDGRX7kBskFWzQU9RWcwbhVGLC+7Hi5t7wVBaI/nnOOhl3h6X/KL\nlAIFMGaaOtt+L81V37iQcMcnqDGSrfE25wg4WWoSzWaQbZ5eOGnH7ezFJr5dYbNO\n5EUFl53etEfFlSdm4WmDHQ0Zx6FoSQqcmcbMMg+tJPnDRoT7wo5hsRrm8fwy7DMn\nBVCzMXxTRHcfUTBlz8N9+PpMEm9tF5tx+syNR8/K1grTPaTwkSzzgPavSlLbTCVv\nQQIDAQAB\n-----END PUBLIC KEY-----\n")
+value PY_RSA_PRIVATE ("-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC1TusAwj2n4qcb\nVAtPl3Y6NnnbiYplWXxLatPlWgYAKSSNRqH27GOH4KVcHwEsNZSaxecbZa4wo4xC\nbrYTyy53YjWqX7Kl7REwMZFfuQGyQVbNBT1FZzBuFUYsL7seLm3vBUFoj+ec46GX\neHpf8ouUAgUwZpo6234vzVXfuJBwxyeoMZKt8TbnCDhZahLNZpBtnl44acft7MUm\nvl1hs07kRQWXnd60R8WVJ2bhaYMdDRnHoWhJCpyZxswyD60k+cNGhPvCjmGxGubx\n/DLsMycFULMxfFNEdx9RMGXPw334+kwSb20Xm3H6zI1Hz8rWCtM9pPCRLPOA9q9K\nUttMJW9BAgMBAAECggEAAwfuUDVVe1VqRPMWVVHk466kqHgXwv+VK/WXOtuGA8Hf\nhVt+7altNVWBR8iRtNl+26+FrSTGarQkbh/hSPQ5zKK5q78TaRUZ5A8prP38x0Wy\nwi6qPY5iD66o9ttXBEQmb+5+9dTu1eXNF8LBDCv6PvkueQaq4WNpLDqa8U7pxNjb\nZe0mFzNvR4TXGxV4AP3N1qYkpZDQAxObytzRehr13K+6M48pLccG5V8zb+cXFvP2\nTwYQ5JYoBImuTKd53I9EuPAWRrZwrW4GtT4tLnrAin5Q/CRoCWLVh09nyWMgfFKS\nWcoOx8XW2eoPPyzRoKp0UTlGdD7vF7Sy3J/yvJxJOQKBgQD4MMggqdZIE7x6uR/e\nvAhkP78XWB5X1TxTKue7Evcnox2dznTwzA/PPjSbJ9GeCqrERtcwblY+1h+TlRIT\njss1Kf3Go8rImAUbV9DzU0v2urvRTmJuMw63GWn80dgpVbiTkanBy0wGP+i6U5b7\nAfr5ezvBce494ZMTJlG8F44mhwKBgQC7A2NF0abUtnsTKgQhjDm23laD+gfGS/8g\nX1RDySpDMIUJXbsfaT7QlIThDrXCMwm3CXD6k20ZL5T8n8DqDS3JyYd8D1ymHrct\nQbtFnNgW27gNtVooIXeddYYhZkr5i3TgJCWGO29tSHaSpGM+hIEWTmxADsBQEFfj\nPQz0RJ1l9wKBgQDGWXYXZKQ0BlHjYn/t6ihqtedqKKpXV7tWXDvGbmnH67yHmbAr\noWohHn28Yh5MSAohwtvHgOa8YTPrJn/D0aLlYiHG1rABkDzElXIQhMl47dOceyB/\nIZ7pBg6GVs6CeleA2DDrCCZB+GFuR8+p2vNQ3wPqnbrhCZ4Y987qm4inkQKBgBqT\nO6szRLLbj5fEk7u0sorjA4ZTpIEwUXvnMBFF5+SOY4lWMX4gNZXsVQmqTnffStUg\n2VYyVwGKOnC/vulDoCsZoVAm2rKckMk0mwkkZayx4nDIQZyMTPQqPDpI0ASwJZao\nbFCr54SvFHJ4O8YpjDKASG+96OQ3vlWDWnDnwzo3AoGAOnt+kD+oDvDdCIzw0Ltf\n1COskkCvnqJY+NIDohJekMldjdLT5tIUF+3Lbkgx0aHKq4vSqXVYQyFBmDA1evhQ\n2nazI70oakdVCTxFqiD/t5Cw4VTxtEmvmd4eVecWn6kp0y9cWlku2P1qv0860pVh\nqEzJuYfLLPE9UMSEo4ELdt0=\n-----END PRIVATE KEY-----\n")
+value PY_ES256_PUBLIC ("-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAErbOxgqlMp27Y3pLHLlOk4tmOJhnE\n8Q/TsaPTrPnkg2XSE78xOcWrYayV5BzKXgnvpcKOHHi+dI3RaLtogwuZXQ==\n-----END PUBLIC KEY-----\n")
+value PY_ED_PUBLIC ("-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAEdtGj/j0LtN2jT66FEQmHZnIp2lViUs80MVk7qv06Io=\n-----END PUBLIC KEY-----\n")
+value PY_JWKS ("{\"keys\": [{\"kty\": \"RSA\", \"kid\": \"rsa-1\", \"use\": \"sig\", \"alg\": \"RS256\", \"n\": \"tU7rAMI9p-KnG1QLT5d2OjZ524mKZVl8S2rT5VoGACkkjUah9uxjh-ClXB8BLDWUmsXnG2WuMKOMQm62E8sud2I1ql-ype0RMDGRX7kBskFWzQU9RWcwbhVGLC-7Hi5t7wVBaI_nnOOhl3h6X_KLlAIFMGaaOtt-L81V37iQcMcnqDGSrfE25wg4WWoSzWaQbZ5eOGnH7ezFJr5dYbNO5EUFl53etEfFlSdm4WmDHQ0Zx6FoSQqcmcbMMg-tJPnDRoT7wo5hsRrm8fwy7DMnBVCzMXxTRHcfUTBlz8N9-PpMEm9tF5tx-syNR8_K1grTPaTwkSzzgPavSlLbTCVvQQ\", \"e\": \"AQAB\"}, {\"kty\": \"EC\", \"kid\": \"ec-ES256\", \"crv\": \"P-256\", \"x\": \"rbOxgqlMp27Y3pLHLlOk4tmOJhnE8Q_TsaPTrPnkg2U\", \"y\": \"0hO_MTnFq2GsleQcyl4J76XCjhx4vnSN0Wi7aIMLmV0\"}, {\"kty\": \"EC\", \"kid\": \"ec-ES384\", \"crv\": \"P-384\", \"x\": \"QcKJiYNUCwkBxuP75F4JBTOJD8Y6O-RH0Wi_rnjA_Y4G2FP6DRifTfCPL7ylj6XV\", \"y\": \"I8ZjpC8zi8Adbq6wWx4ftBxm3D7mCWDU7Q0LrURSX7TglRdOBjwBqavvEV_LX57K\"}, {\"kty\": \"EC\", \"kid\": \"ec-ES512\", \"crv\": \"P-521\", \"x\": \"AEmjZ_GUusKRMYU9KWCgYaGq7EZOKKAVMJS6KOdtCvWIXGEs7v8onb7vp3Q7FH1bcfQyYep_8UuGnp8Y_oG96UAE\", \"y\": \"AdGrspaCumQzDSE5zqNsSIYdtZMviCCYXq-mMkch_5y7krkLVOoBblsZUg7-NMpoSIbZOE_iwBLS-bctrpjvRZJy\"}, {\"kty\": \"OKP\", \"kid\": \"ed-1\", \"crv\": \"Ed25519\", \"x\": \"EdtGj_j0LtN2jT66FEQmHZnIp2lViUs80MVk7qv06Io\"}, {\"kty\": \"RSA\", \"kid\": \"enc-1\", \"use\": \"enc\", \"n\": \"tU7rAMI9p-KnG1QLT5d2OjZ524mKZVl8S2rT5VoGACkkjUah9uxjh-ClXB8BLDWUmsXnG2WuMKOMQm62E8sud2I1ql-ype0RMDGRX7kBskFWzQU9RWcwbhVGLC-7Hi5t7wVBaI_nnOOhl3h6X_KLlAIFMGaaOtt-L81V37iQcMcnqDGSrfE25wg4WWoSzWaQbZ5eOGnH7ezFJr5dYbNO5EUFl53etEfFlSdm4WmDHQ0Zx6FoSQqcmcbMMg-tJPnDRoT7wo5hsRrm8fwy7DMnBVCzMXxTRHcfUTBlz8N9-PpMEm9tF5tx-syNR8_K1grTPaTwkSzzgPavSlLbTCVvQQ\", \"e\": \"AQAB\"}, {\"kty\": \"oct\", \"kid\": \"secret-1\", \"k\": \"c2VjcmV0\"}, {\"kty\": \"RSA\", \"n\": \"tU7rAMI9p-KnG1QLT5d2OjZ524mKZVl8S2rT5VoGACkkjUah9uxjh-ClXB8BLDWUmsXnG2WuMKOMQm62E8sud2I1ql-ype0RMDGRX7kBskFWzQU9RWcwbhVGLC-7Hi5t7wVBaI_nnOOhl3h6X_KLlAIFMGaaOtt-L81V37iQcMcnqDGSrfE25wg4WWoSzWaQbZ5eOGnH7ezFJr5dYbNO5EUFl53etEfFlSdm4WmDHQ0Zx6FoSQqcmcbMMg-tJPnDRoT7wo5hsRrm8fwy7DMnBVCzMXxTRHcfUTBlz8N9-PpMEm9tF5tx-syNR8_K1grTPaTwkSzzgPavSlLbTCVvQQ\", \"e\": \"AQAB\"}]}")

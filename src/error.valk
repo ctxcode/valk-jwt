@@ -10,9 +10,12 @@
 /// - `not_yet_valid`: `nbf` lies in the future.
 /// - `claim`: a claim the caller asked for is missing or is not what it asked for, such as an
 ///   audience or an issuer that does not match.
+/// - `key`: no key to check the token with: a `KeySet` without the token's `kid`, or a key that
+///   does not fit the algorithm, such as an EC key for RS256. Also thrown by `sign` for a key
+///   that cannot sign with the algorithm.
 ///
 /// Every one of these means the token must be refused; they are apart so that a program can
 /// tell an expired session from a forged one.
-+ error Error (syntax, signature, algorithm, expired, not_yet_valid, claim) payload {
++ error Error (syntax, signature, algorithm, expired, not_yet_valid, claim, key) payload {
     message: String
 }

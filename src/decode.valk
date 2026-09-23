@@ -14,7 +14,72 @@ use valk.crypto
 ///     return "that token is not valid"
 /// }
 /// ```
+///
+/// This checks the HMAC algorithms, signed with a secret; tokens signed with a private key are
+/// checked by `verify`. An `options.algorithm` of another kind throws `algorithm`.
 + fn decode(token: String, secret: String, options: Options (.{})) Claims !Error {
+    if !is_hmac(options.algorithm) {
+        throw .algorithm { message: algorithm_name(options.algorithm) + " tokens are checked with a public key, through verify" }
+    }
+    let token_parts = split_token(token, options) !>
+    if !crypto.Hmac.verify(hash_of(options.algorithm), secret, token_parts.signing_input, token_parts.signature) {
+        throw .signature { message: "The signature of this token does not belong to it" }
+    }
+    return accept(token_parts, options) !>
+}
+
+/// Reads a token, checks its signature with a public key, and returns what it says.
+///
+/// For the RSA, ECDSA and EdDSA algorithms; `options.algorithm` says which one the token must
+/// use, and the claims are checked as `decode` checks them. Throws `algorithm` for an HMAC
+/// algorithm, which `decode` checks with a secret, and `key` when the key does not fit the
+/// algorithm.
+///
+/// ```valk
+/// let key = crypto.PublicKey.from_pem(pem) ! panic("not a key")
+/// let claims = jwt.verify(token, key, jwt.Options { algorithm: jwt.Algorithm.rs256 }) ! panic("%{E.message}")
+/// ```
++ fn verify(token: String, key: crypto.PublicKey, options: Options) Claims !Error {
+    if is_hmac(options.algorithm) {
+        throw .algorithm { message: algorithm_name(options.algorithm) + " tokens are checked with a secret, through decode" }
+    }
+    let algorithm = options.algorithm
+    if !key_fits(algorithm, key.key_type(), key.bits()) {
+        throw .key { message: "This key cannot check " + algorithm_name(algorithm) + " signatures" }
+    }
+    let token_parts = split_token(token, options) !>
+    let signature = token_parts.signature
+    // JWS writes ECDSA signatures as r and s side by side; the key checks DER
+    if is_ecdsa(algorithm) {
+        let size = (ec_bits(algorithm) + 7) / 8
+        if signature.bytes != size * 2 {
+            throw .signature { message: "The signature of this token does not belong to it" }
+        }
+        signature = crypto.ecdsa_signature_from_raw(signature) ! {
+            throw .signature { message: "The signature of this token does not belong to it" }
+        }
+    }
+    if !key.verify(signature_algorithm(algorithm), token_parts.signing_input, signature) {
+        throw .signature { message: "The signature of this token does not belong to it" }
+    }
+    return accept(token_parts, options) !>
+}
+
+/// Reads a token into a class or struct of your own, checking it the way `verify` does.
++ fn verify_to[T](token: String, key: crypto.PublicKey, options: Options) T !Error {
+    let claims = verify(token, key, options) !>
+    return claims.to_type[T]() !>
+}
+
+class TokenParts {
+    header: json.Value
+    payload_text: String
+    signing_input: String
+    signature: String
+}
+
+// Splits a token and checks that its header names the algorithm the caller expects
+fn split_token(token: String, options: Options) TokenParts !Error {
     let parts = token.split(".")
     if parts.length != 3 {
         throw .syntax { message: "A token is three parts separated by dots, this one has " + parts.length }
@@ -32,14 +97,17 @@ use valk.crypto
     if named != expected {
         throw .algorithm { message: "This token is signed with '" + named + "' where '" + expected + "' was expected" }
     }
-
-    let signing_input = header_text + "." + payload_text
-    let signature = base64url_decode(signature_text) !>
-    if !crypto.Hmac.verify(hash_of(options.algorithm), secret, signing_input, signature) {
-        throw .signature { message: "The signature of this token does not belong to it" }
+    return TokenParts {
+        header: header
+        payload_text: payload_text
+        signing_input: header_text + "." + payload_text
+        signature: base64url_decode(signature_text) !>
     }
+}
 
-    let claims = read_claims(payload_text) !>
+// The claims of a token whose signature was found good, checked against `options`
+fn accept(token_parts: TokenParts, options: Options) Claims !Error {
+    let claims = read_claims(token_parts.payload_text) !>
     check_claims(claims, options) !>
     return claims
 }

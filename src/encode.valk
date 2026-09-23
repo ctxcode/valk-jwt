@@ -10,7 +10,54 @@ use valk.crypto
 /// let claims = json.new_object()
 /// let token = jwt.encode(json.from(.{ "sub" => "user-1" }), secret, jwt.Algorithm.hs256, 3600)
 /// ```
+///
+/// Only the HMAC algorithms sign with a secret: another algorithm panics, those sign with a
+/// private key through `sign`.
 + fn encode(claims: json.Value, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0)) String {
+    if !is_hmac(algorithm) : panic(algorithm_name(algorithm) + " signs with a private key, through jwt.sign")
+    let input = signing_input(claims, algorithm, expires_in_seconds, "")
+    let signature = crypto.Hmac.sign(hash_of(algorithm), secret, input)
+    return input + "." + base64url_encode(signature)
+}
+
+/// Signs claims into a token with a private key, for the RSA, ECDSA and EdDSA algorithms.
+///
+/// `key_id` becomes the header's `kid`, so a verifier that holds several keys, such as a
+/// `KeySet`, can tell which one to use. Throws `algorithm` for an HMAC algorithm, which
+/// `encode` signs with a secret, and `key` when the key does not fit the algorithm, such as an
+/// EC key for RS256 or a P-384 key for ES256.
+///
+/// ```valk
+/// let key = crypto.PrivateKey.from_pem(pem) ! panic("not a key")
+/// let token = jwt.sign(json.from(Map[String]{ "sub" => "user-1" }), key, jwt.Algorithm.es256, 3600, "key-2024") ! panic("%{E.message}")
+/// ```
++ fn sign(claims: json.Value, key: crypto.PrivateKey, algorithm: Algorithm, expires_in_seconds: uint (0), key_id: String ("")) String !Error {
+    if is_hmac(algorithm) {
+        throw .algorithm { message: algorithm_name(algorithm) + " signs with a secret, through encode" }
+    }
+    if !key_fits(algorithm, key.key_type(), key.bits()) {
+        throw .key { message: "This key cannot sign with " + algorithm_name(algorithm) }
+    }
+    let input = signing_input(claims, algorithm, expires_in_seconds, key_id)
+    let signature = key.sign(signature_algorithm(algorithm), input) ! {
+        throw .key { message: "Signing with " + algorithm_name(algorithm) + " failed" }
+    }
+    // JWS writes ECDSA signatures as r and s side by side, not in DER
+    if is_ecdsa(algorithm) {
+        signature = crypto.ecdsa_signature_to_raw(signature, ec_curve(algorithm)) ! {
+            throw .key { message: "Signing with " + algorithm_name(algorithm) + " failed" }
+        }
+    }
+    return input + "." + base64url_encode(signature)
+}
+
+/// Signs a class or struct of your own into a token with a private key; see `sign`.
++ fn sign_of(claims: $T, key: crypto.PrivateKey, algorithm: Algorithm, expires_in_seconds: uint (0), key_id: String ("")) String !Error {
+    return sign(json.from(claims), key, algorithm, expires_in_seconds, key_id) !>
+}
+
+// The header and the claims, encoded and joined: what the signature covers
+fn signing_input(claims: json.Value, algorithm: Algorithm, expires_in_seconds: uint, key_id: String) String {
     let payload = claims
     if expires_in_seconds > 0 {
         let now = now_seconds()
@@ -22,10 +69,9 @@ use valk.crypto
     let header_value: json.Value = header
     header_value = header_value.set("alg", json.new_string(algorithm_name(algorithm)))
     header_value = header_value.set("typ", json.new_string("JWT"))
+    if key_id.length > 0 : header_value = header_value.set("kid", json.new_string(key_id))
 
-    let signing_input = base64url_encode(header_value.encode()) + "." + base64url_encode(payload.encode())
-    let signature = crypto.Hmac.sign(hash_of(algorithm), secret, signing_input)
-    return signing_input + "." + base64url_encode(signature)
+    return base64url_encode(header_value.encode()) + "." + base64url_encode(payload.encode())
 }
 
 /// Signs a class or struct of your own into a token, as `json.from` would write it.

@@ -4,7 +4,7 @@
 JSON Web Tokens for [Valk](https://valk-lang.dev): signing, and verifying that refuses everything
 it should. Purely written in Valk, with no os-package dependencies.
 
-Requires Valk 0.7.0 or newer.
+Requires Valk 0.7.5 or newer.
 
 ## Install
 
@@ -91,16 +91,42 @@ may be trusted.
 ## Algorithms
 
 `HS256`, `HS384` and `HS512`: the secret that signs is the secret that verifies, which suits a
-program that signs its own sessions. `RS*` and `ES*`, where a public key verifies what a private
-key signed, need RSA and ECDSA and are not supported yet; a token signed with one of those is
-refused with `algorithm`.
+program that signs its own sessions. These go through `encode` and `decode`.
 
 Keep the secret out of the source and out of the repository: read it from the environment or
 from a file the program is given. A secret shorter than the hash it feeds (32 bytes for HS256)
 weakens the signature.
 
+`RS256` to `RS512`, `PS256` to `PS512`, `ES256` to `ES512` and `EdDSA`: a private key signs and
+its public key verifies, so a token can be checked by a program that could never make one. These
+go through `sign` and `verify`, with the keys of `valk.crypto`:
+
+```rust
+use jwt
+use valk.json
+use valk.crypto
+
+let private = crypto.PrivateKey.from_pem(private_pem) ! panic("not a private key")
+let token = jwt.sign(json.from(Map[String]{ "sub" => "user-1" }), private, jwt.Algorithm.es256, 3600, "key-1") ! panic("%{E.message}")
+
+let public = crypto.PublicKey.from_pem(public_pem) ! panic("not a public key")
+let claims = jwt.verify(token, public, jwt.Options { algorithm: jwt.Algorithm.es256 }) ! panic("%{E.message}")
+```
+
+A token from an OAuth or OpenID Connect provider is checked with the keys it publishes as a JWKS
+document; `verify_with_keys` picks the key the token's `kid` names:
+
+```rust
+let keys = jwt.KeySet.from_jwks(jwks_text) ! panic("%{E.message}")
+let claims = jwt.verify_with_keys(token, keys, jwt.Options { algorithm: jwt.Algorithm.rs256, issuer: "https://accounts.google.com" }) ! panic("%{E.message}")
+```
+
+A secret and a key never stand in for each other: `decode` refuses the key algorithms and
+`verify` the HMAC ones, which rules out the attack where a public key is used as an HMAC secret.
+
 ## Development
 
 `make test` runs the suite, `make example` runs the example, `make lint` checks the sources and
-`make docs` regenerates the API documentation. The tokens the suite writes were also checked
-against an independent implementation of the standard.
+`make docs` regenerates the API documentation. The tokens the suite writes, with every algorithm,
+were also checked against an independent implementation of the standard, and it reads tokens that
+implementation signed.

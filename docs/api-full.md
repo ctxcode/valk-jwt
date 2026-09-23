@@ -11,7 +11,7 @@ Namespaces: [main](#main)
 
 ```js
 // Thrown when a token cannot be read or cannot be trusted.
-+ error Error (syntax, signature, algorithm, expired, not_yet_valid, claim) payload { message: String }
++ error Error (syntax, signature, algorithm, expired, not_yet_valid, claim, key) payload { message: String }
 ```
 
 ### Error
@@ -28,6 +28,9 @@ Thrown when a token cannot be read or cannot be trusted.
 - `not_yet_valid`: `nbf` lies in the future.
 - `claim`: a claim the caller asked for is missing or is not what it asked for, such as an
   audience or an issuer that does not match.
+- `key`: no key to check the token with: a `KeySet` without the token's `kid`, or a key that
+  does not fit the algorithm, such as an EC key for RS256. Also thrown by `sign` for a key
+  that cannot sign with the algorithm.
 
 Every one of these means the token must be refused; they are apart so that a program can
 tell an expired session from a forged one.
@@ -36,15 +39,17 @@ tell an expired session from a forged one.
 
 ```js
 // The algorithms this package signs and verifies with.
-+ enum Algorithm { hs256, hs384, hs512 }
++ enum Algorithm { hs256, hs384, hs512, rs256, rs384, rs512, ps256, ps384, ps512, es256, es384, es512, eddsa }
 ```
 
 ### Algorithm
 
 The algorithms this package signs and verifies with.
 
-These are the HMAC ones, where signing and verifying use the same secret. The RSA and ECDSA
-algorithms, where a public key verifies what a private key signed, are not supported yet.
+The HMAC ones (`hs*`) sign and verify with one secret, through `encode` and `decode`. The
+others sign with a private key and verify with its public key, through `sign` and
+`verify`: RSA with PKCS#1 v1.5 (`rs*`) or PSS padding (`ps*`), ECDSA on P-256, P-384 and
+P-521 (`es256`, `es384`, `es512`), and Ed25519 (`eddsa`).
 
 ## Functions for 'main'
 
@@ -63,6 +68,16 @@ algorithms, where a public key verifies what a private key signed, are not suppo
 + fn encode(claims: Value, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0)) String
 // Signs a class or struct of your own into a token, as `json.from` would write it.
 + fn encode_of(claims: $T, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0)) String
+// Signs claims into a token with a private key, for the RSA, ECDSA and EdDSA algorithms.
++ fn sign(claims: Value, key: PrivateKey, algorithm: Algorithm, expires_in_seconds: uint (0), key_id: String ("")) String !Error
+// Signs a class or struct of your own into a token with a private key; see `sign`.
++ fn sign_of(claims: $T, key: PrivateKey, algorithm: Algorithm, expires_in_seconds: uint (0), key_id: String ("")) String !Error
+// Reads a token, checks its signature with a public key, and returns what it says.
++ fn verify(token: String, key: PublicKey, options: Options) Claims !Error
+// Reads a token into a class or struct of your own, checking it the way `verify` does.
++ fn verify_to[T](token: String, key: PublicKey, options: Options) T !Error
+// Checks a token with the key its `kid` names in `keys`, as `verify` checks it with one key.
++ fn verify_with_keys(token: String, keys: KeySet, options: Options) Claims !Error
 ```
 
 ### base64url_decode
@@ -92,6 +107,9 @@ let claims = jwt.decode(token, secret) ! {
 }
 ```
 
+This checks the HMAC algorithms, signed with a secret; tokens signed with a private key are
+checked by `verify`. An `options.algorithm` of another kind throws `algorithm`.
+
 ### decode_to
 
 Reads a token into a class or struct of your own, checking it the way `decode` does.
@@ -116,6 +134,9 @@ let claims = json.new_object()
 let token = jwt.encode(json.from(.{ "sub" => "user-1" }), secret, jwt.Algorithm.hs256, 3600)
 ```
 
+Only the HMAC algorithms sign with a secret: another algorithm panics, those sign with a
+private key through `sign`.
+
 ### encode_of
 
 Signs a class or struct of your own into a token, as `json.from` would write it.
@@ -128,6 +149,49 @@ class Session {
 
 let token = jwt.encode_of(Session { sub: "user-1", role: "admin" }, secret, jwt.Algorithm.hs256, 3600)
 ```
+
+### sign
+
+Signs claims into a token with a private key, for the RSA, ECDSA and EdDSA algorithms.
+
+`key_id` becomes the header's `kid`, so a verifier that holds several keys, such as a
+`KeySet`, can tell which one to use. Throws `algorithm` for an HMAC algorithm, which
+`encode` signs with a secret, and `key` when the key does not fit the algorithm, such as an
+EC key for RS256 or a P-384 key for ES256.
+
+```valk
+let key = crypto.PrivateKey.from_pem(pem) ! panic("not a key")
+let token = jwt.sign(json.from(Map[String]{ "sub" => "user-1" }), key, jwt.Algorithm.es256, 3600, "key-2024") ! panic("%{E.message}")
+```
+
+### sign_of
+
+Signs a class or struct of your own into a token with a private key; see `sign`.
+
+### verify
+
+Reads a token, checks its signature with a public key, and returns what it says.
+
+For the RSA, ECDSA and EdDSA algorithms; `options.algorithm` says which one the token must
+use, and the claims are checked as `decode` checks them. Throws `algorithm` for an HMAC
+algorithm, which `decode` checks with a secret, and `key` when the key does not fit the
+algorithm.
+
+```valk
+let key = crypto.PublicKey.from_pem(pem) ! panic("not a key")
+let claims = jwt.verify(token, key, jwt.Options { algorithm: jwt.Algorithm.rs256 }) ! panic("%{E.message}")
+```
+
+### verify_to
+
+Reads a token into a class or struct of your own, checking it the way `verify` does.
+
+### verify_with_keys
+
+Checks a token with the key its `kid` names in `keys`, as `verify` checks it with one key.
+
+Throws `key` when the token has no `kid` or the set has no key with it, and `algorithm`
+when the key's JWK is limited to another algorithm than `options.algorithm`.
 
 ## Classes for 'main'
 
@@ -240,6 +304,50 @@ Returns a claim as text, or "" when it is not there.
 #### to_type
 
 Reads the claims into a class or struct of your own, as `json.Value.to_type` does.
+
+```js
+// Public keys by key id, as an OAuth or OpenID Connect provider publishes them in a JWKS document, for `verify_with_keys`.
++ class KeySet {
+    // Adds `key` under `key_id`, replacing a key with that id.
+    + fn add(key_id: String, key: PublicKey) void
+    // Reads a JWKS document, `{"keys": [...]}`.
+    + static fn from_jwks(text: String) KeySet !Error
+    // Returns the key with id `key_id`, or null.
+    + fn get(key_id: String) ?PublicKey
+    // Returns the ids of the keys in the set.
+    + fn key_ids() Array[String]
+}
+```
+
+### KeySet
+
+Public keys by key id, as an OAuth or OpenID Connect provider publishes them in a JWKS
+document, for `verify_with_keys`.
+
+```valk
+let keys = jwt.KeySet.from_jwks(jwks_text) ! panic("%{E.message}")
+let claims = jwt.verify_with_keys(token, keys, jwt.Options { algorithm: jwt.Algorithm.rs256 }) ! panic("%{E.message}")
+```
+
+#### add
+
+Adds `key` under `key_id`, replacing a key with that id.
+
+#### from_jwks
+
+Reads a JWKS document, `{"keys": [...]}`.
+
+Keys without a `kid`, keys for encryption (`use` other than `sig`) and keys of a type
+`crypto.PublicKey.from_jwk` does not read are left out, so a document may list more than
+this package uses. Throws `syntax` when the text is not a JWKS document.
+
+#### get
+
+Returns the key with id `key_id`, or null.
+
+#### key_ids
+
+Returns the ids of the keys in the set.
 
 ```js
 // What a token has to satisfy to be accepted.
