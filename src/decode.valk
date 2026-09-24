@@ -135,10 +135,23 @@ fn read_claims(payload_text: String) Claims !Error {
     let data = json.decode(base64url_decode(payload_text) !>) ! {
         throw .syntax { message: "The claims of this token are not valid JSON" }
     }
+    // `aud` is a string or a list of strings
+    let audiences = Array[String]{}
+    let aud = data.get("aud")
+    if aud.is_array {
+        each aud.array.values as item {
+            let name = item.string_value() !? ""
+            if name.length > 0 : audiences.append(name)
+        }
+    } else {
+        let name = aud.string_value() !? ""
+        if name.length > 0 : audiences.append(name)
+    }
     return Claims {
         issuer: data.get("iss").string_value() !? ""
         subject: data.get("sub").string_value() !? ""
-        audience: data.get("aud").string_value() !? ""
+        audience: audiences.get(0) !? ""
+        audiences: audiences
         id: data.get("jti").string_value() !? ""
         expires_at: claim_seconds(data, "exp")
         not_before: claim_seconds(data, "nbf")
@@ -170,8 +183,8 @@ fn check_claims(claims: Claims, options: Options) !Error {
         throw .not_yet_valid { message: "This token is not valid before " + claims.not_before }
     }
 
-    if options.audience.length > 0 && claims.audience != options.audience {
-        throw .claim { message: "This token is for '" + claims.audience + "', not for '" + options.audience + "'" }
+    if options.audience.length > 0 && !claims.audiences.contains(options.audience) {
+        throw .claim { message: "This token is for '" + claims.audiences.join("', '") + "', not for '" + options.audience + "'" }
     }
     if options.issuer.length > 0 && claims.issuer != options.issuer {
         throw .claim { message: "This token is from '" + claims.issuer + "', not from '" + options.issuer + "'" }

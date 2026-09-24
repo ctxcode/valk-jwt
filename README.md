@@ -63,7 +63,7 @@ it. Signatures are compared in constant time.
 jwt.decode(token, secret, .{
     algorithm: jwt.Algorithm.hs512   // the algorithm the token must use
     leeway_seconds: 30               // clock difference to forgive on exp and nbf
-    audience: "the-api"              // aud must be this
+    audience: "the-api"              // aud must be this, or a list holding it
     issuer: "the-login-service"      // iss must be this
     require_expiry: true             // refuse a token that never expires
 }) ! panic("%{E.message}")
@@ -74,7 +74,8 @@ jwt.decode(token, secret, .{
 ```rust
 claims.subject      // sub
 claims.issuer       // iss
-claims.audience     // aud
+claims.audience     // aud; the first one when aud is a list
+claims.audiences    // every aud value
 claims.id           // jti
 claims.expires_at   // exp, in seconds since the epoch
 claims.not_before   // nbf

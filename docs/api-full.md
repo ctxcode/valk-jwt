@@ -198,8 +198,10 @@ when the key's JWK is limited to another algorithm than `options.algorithm`.
 ```js
 // What a token says.
 + class Claims {
-    // `aud`: who the token is for.
+    // `aud`: who the token is for; the first one when `aud` is a list.
     + audience: String
+    // Every `aud` value: one for a plain `aud`, all of them for a list.
+    + audiences: Array[String]
     // Everything the token says, the claims above included.
     + data: Value
     // `exp`: the second after which the token is no longer valid, or 0 when it never expires.
@@ -247,7 +249,11 @@ println(claims.data["role"].string)           // a claim of your own
 
 #### audience
 
-`aud`: who the token is for.
+`aud`: who the token is for; the first one when `aud` is a list.
+
+#### audiences
+
+Every `aud` value: one for a plain `aud`, all of them for a list.
 
 #### data
 
@@ -354,7 +360,7 @@ Returns the ids of the keys in the set.
 + class Options {
     // The algorithm the token must be signed with.
     + algorithm: Algorithm
-    // The audience the token must carry, or "" to accept any.
+    // The audience the token must carry, or "" to accept any. When `aud` is a list, the audience has to be one of its values.
     + audience: String
     // The issuer the token must carry, or "" to accept any.
     + issuer: String
@@ -378,7 +384,8 @@ The algorithm the token must be signed with.
 
 #### audience
 
-The audience the token must carry, or "" to accept any.
+The audience the token must carry, or "" to accept any. When `aud` is a list, the
+audience has to be one of its values.
 
 #### issuer
 

@@ -164,6 +164,26 @@ test "Audience and issuer" {
     assert(false)
 }
 
+test "An audience list" {
+    let document: json.Value = json.new_object()
+    document = document.set("aud", json.new_array(Array[json.Value]{ json.new_string("web"), json.new_string("the-api") }))
+    let token = jwt.encode(document, SECRET)
+
+    let claims = jwt.decode(token, SECRET, .{ audience: "the-api" }) ! {
+        println(E.message)
+        assert(false)
+        return
+    }
+    assert(claims.audience == "web")
+    assert(claims.audiences.length == 2)
+    jwt.decode(token, SECRET, .{ audience: "admin" }) ! {
+        assert(error_is(E.code, claim))
+        assert(E.message == "This token is for 'web', 'the-api', not for 'admin'")
+        return
+    }
+    assert(false)
+}
+
 test "Reading a token without checking it" {
     let token = jwt.encode(claims_of(.{ "sub" => "user-1", "iss" => "the-login-service" }), SECRET)
 
