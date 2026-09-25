@@ -34,10 +34,12 @@ Namespaces: [main](#main)
 + fn decode_to[T](token: String, secret: String, options: Options (.{})) T !Error
 // Reads what a token says without checking anything at all.
 + fn decode_unverified(token: String) Claims !Error
+// Checks a token with the secret its `kid` names in `secrets`, as `decode` checks it with one secret.
++ fn decode_with_secrets(token: String, secrets: SecretSet, options: Options (.{})) Claims !Error
 // Signs claims into a token.
-+ fn encode(claims: Value, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0)) String
++ fn encode(claims: Value, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0), key_id: String ("")) String
 // Signs a class or struct of your own into a token, as `json.from` would write it.
-+ fn encode_of(claims: $T, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0)) String
++ fn encode_of(claims: $T, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0), key_id: String ("")) String
 // Signs claims into a token with a private key, for the RSA, ECDSA and EdDSA algorithms.
 + fn sign(claims: Value, key: PrivateKey, algorithm: Algorithm, expires_in_seconds: uint (0), key_id: String ("")) String !Error
 // Signs a class or struct of your own into a token with a private key; see `sign`.
@@ -118,5 +120,17 @@ Namespaces: [main](#main)
     + leeway_seconds: uint
     // Whether a token without `exp` is refused.
     + require_expiry: bool
+}
+```
+
+```js
+// HMAC secrets by key id, for rotating the secret without refusing the tokens signed before.
++ class SecretSet {
+    // Adds `secret` under `key_id`, replacing a secret with that id.
+    + fn add(key_id: String, secret: String) void
+    // Returns the secret with id `key_id`, or null.
+    + fn get(key_id: String) ?String
+    // Returns the ids of the secrets in the set.
+    + fn key_ids() Array[String]
 }
 ```

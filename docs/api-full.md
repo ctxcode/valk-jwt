@@ -64,10 +64,12 @@ P-521 (`es256`, `es384`, `es512`), and Ed25519 (`eddsa`).
 + fn decode_to[T](token: String, secret: String, options: Options (.{})) T !Error
 // Reads what a token says without checking anything at all.
 + fn decode_unverified(token: String) Claims !Error
+// Checks a token with the secret its `kid` names in `secrets`, as `decode` checks it with one secret.
++ fn decode_with_secrets(token: String, secrets: SecretSet, options: Options (.{})) Claims !Error
 // Signs claims into a token.
-+ fn encode(claims: Value, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0)) String
++ fn encode(claims: Value, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0), key_id: String ("")) String
 // Signs a class or struct of your own into a token, as `json.from` would write it.
-+ fn encode_of(claims: $T, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0)) String
++ fn encode_of(claims: $T, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0), key_id: String ("")) String
 // Signs claims into a token with a private key, for the RSA, ECDSA and EdDSA algorithms.
 + fn sign(claims: Value, key: PrivateKey, algorithm: Algorithm, expires_in_seconds: uint (0), key_id: String ("")) String !Error
 // Signs a class or struct of your own into a token with a private key; see `sign`.
@@ -122,6 +124,13 @@ Nothing that comes out of this may be trusted: anyone can write a token. It is f
 a token you already refused, or for reading the `iss` of one before you know which secret to
 check it with.
 
+### decode_with_secrets
+
+Checks a token with the secret its `kid` names in `secrets`, as `decode` checks it with one
+secret.
+
+Throws `key` when the token has no `kid` or the set has no secret with it.
+
 ### encode
 
 Signs claims into a token.
@@ -133,6 +142,9 @@ token without `exp` is valid until the secret changes.
 let claims = json.new_object()
 let token = jwt.encode(json.from(.{ "sub" => "user-1" }), secret, jwt.Algorithm.hs256, 3600)
 ```
+
+`key_id` becomes the header's `kid`, so a server that rotates its secrets can tell which one
+signed the token; see `SecretSet`.
 
 Only the HMAC algorithms sign with a secret: another algorithm panics, those sign with a
 private key through `sign`.
@@ -398,3 +410,42 @@ How much clock difference to allow when checking `exp` and `nbf`, in seconds.
 #### require_expiry
 
 Whether a token without `exp` is refused.
+
+```js
+// HMAC secrets by key id, for rotating the secret without refusing the tokens signed before.
++ class SecretSet {
+    // Adds `secret` under `key_id`, replacing a secret with that id.
+    + fn add(key_id: String, secret: String) void
+    // Returns the secret with id `key_id`, or null.
+    + fn get(key_id: String) ?String
+    // Returns the ids of the secrets in the set.
+    + fn key_ids() Array[String]
+}
+```
+
+### SecretSet
+
+HMAC secrets by key id, for rotating the secret without refusing the tokens signed before.
+
+Sign new tokens with the newest secret and its id (the `key_id` of `encode`), and keep the
+older secrets in the set until the tokens they signed have expired.
+
+```valk
+let secrets = jwt.SecretSet {}
+secrets.add("2026-09", new_secret)
+secrets.add("2026-06", old_secret)
+let token = jwt.encode(claims, new_secret, jwt.Algorithm.hs256, 3600, "2026-09")
+let checked = jwt.decode_with_secrets(token, secrets) ! panic("%{E.message}")
+```
+
+#### add
+
+Adds `secret` under `key_id`, replacing a secret with that id.
+
+#### get
+
+Returns the secret with id `key_id`, or null.
+
+#### key_ids
+
+Returns the ids of the secrets in the set.
