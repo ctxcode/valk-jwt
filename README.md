@@ -98,6 +98,19 @@ Keep the secret out of the source and out of the repository: read it from the en
 from a file the program is given. A secret shorter than the hash it feeds (32 bytes for HS256)
 weakens the signature.
 
+To change the secret without refusing every token it signed, give each secret an id. `encode`
+writes it into the token as `kid`, and `decode_with_secrets` checks a token with the secret its
+`kid` names. Keep an old secret in the set until its tokens have expired:
+
+```rust
+let secrets = jwt.SecretSet {}
+secrets.add("2026-09", new_secret)
+secrets.add("2026-06", old_secret)
+
+let token = jwt.encode(claims, new_secret, jwt.Algorithm.hs256, 3600, "2026-09")
+let checked = jwt.decode_with_secrets(token, secrets) ! panic("%{E.message}")
+```
+
 `RS256` to `RS512`, `PS256` to `PS512`, `ES256` to `ES512` and `EdDSA`: a private key signs and
 its public key verifies, so a token can be checked by a program that could never make one. These
 go through `sign` and `verify`, with the keys of `valk.crypto`:

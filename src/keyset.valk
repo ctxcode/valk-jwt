@@ -61,12 +61,7 @@ use valk.crypto
 /// Throws `key` when the token has no `kid` or the set has no key with it, and `algorithm`
 /// when the key's JWK is limited to another algorithm than `options.algorithm`.
 + fn verify_with_keys(token: String, keys: KeySet, options: Options) Claims !Error {
-    let header_text = token.split(".").get(0) !? ""
-    let header = json.decode(base64url_decode(header_text) !>) ! {
-        throw .syntax { message: "The header of this token is not valid JSON" }
-    }
-    let id = header.get("kid").string_value() !? ""
-    if id.length == 0 : throw .key { message: "This token names no key ('kid')" }
+    let id = token_key_id(token) !>
     let key = keys.get(id) ?! throw .key { message: "No key with id '" + id + "' in the key set" }
     let limited = keys.algorithms.get(id) !? ""
     let expected = algorithm_name(options.algorithm)
@@ -74,4 +69,15 @@ use valk.crypto
         throw .algorithm { message: "Key '" + id + "' is for " + limited + ", not for " + expected }
     }
     return verify(token, key, options) !>
+}
+
+// The `kid` in the header of `token`; throws `key` when it names none
+fn token_key_id(token: String) String !Error {
+    let header_text = token.split(".").get(0) !? ""
+    let header = json.decode(base64url_decode(header_text) !>) ! {
+        throw .syntax { message: "The header of this token is not valid JSON" }
+    }
+    let id = header.get("kid").string_value() !? ""
+    if id.length == 0 : throw .key { message: "This token names no key ('kid')" }
+    return id
 }

@@ -11,11 +11,14 @@ use valk.crypto
 /// let token = jwt.encode(json.from(.{ "sub" => "user-1" }), secret, jwt.Algorithm.hs256, 3600)
 /// ```
 ///
+/// `key_id` becomes the header's `kid`, so a server that rotates its secrets can tell which one
+/// signed the token; see `SecretSet`.
+///
 /// Only the HMAC algorithms sign with a secret: another algorithm panics, those sign with a
 /// private key through `sign`.
-+ fn encode(claims: json.Value, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0)) String {
++ fn encode(claims: json.Value, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0), key_id: String ("")) String {
     if !is_hmac(algorithm) : panic(algorithm_name(algorithm) + " signs with a private key, through jwt.sign")
-    let input = signing_input(claims, algorithm, expires_in_seconds, "")
+    let input = signing_input(claims, algorithm, expires_in_seconds, key_id)
     let signature = crypto.Hmac.sign(hash_of(algorithm), secret, input)
     return input + "." + base64url_encode(signature)
 }
@@ -84,6 +87,6 @@ fn signing_input(claims: json.Value, algorithm: Algorithm, expires_in_seconds: u
 ///
 /// let token = jwt.encode_of(Session { sub: "user-1", role: "admin" }, secret, jwt.Algorithm.hs256, 3600)
 /// ```
-+ fn encode_of(claims: $T, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0)) String {
-    return encode(json.from(claims), secret, algorithm, expires_in_seconds)
++ fn encode_of(claims: $T, secret: String, algorithm: Algorithm (Algorithm.hs256), expires_in_seconds: uint (0), key_id: String ("")) String {
+    return encode(json.from(claims), secret, algorithm, expires_in_seconds, key_id)
 }

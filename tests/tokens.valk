@@ -197,3 +197,38 @@ test "Reading a token without checking it" {
     let anything = jwt.decode_unverified(unsigned) ! { assert(false) return }
     assert(anything.subject == "whoever")
 }
+
+test "Rotating secrets by key id" {
+    let old_secret = "the-secret-of-june"
+    let new_secret = "the-secret-of-september"
+    let secrets = jwt.SecretSet {}
+    secrets.add("2026-09", new_secret)
+    secrets.add("2026-06", old_secret)
+
+    // The id goes into the header, and picks the secret that checks the token
+    let fresh = jwt.encode(claims_of(Map[String]{ "sub" => "ada" }), new_secret, jwt.Algorithm.hs256, 3600, "2026-09")
+    let header = jwt.base64url_decode(fresh.split(".").get(0) !? "") ! { assert(false) return }
+    assert(header.contains("\"kid\":\"2026-09\""))
+    let checked = jwt.decode_with_secrets(fresh, secrets) ! { assert(false) return }
+    assert(checked.subject == "ada")
+    let older = jwt.encode_of(Session { sub: "bob", role: "admin" }, old_secret, jwt.Algorithm.hs256, 3600, "2026-06")
+    let checked_older = jwt.decode_with_secrets(older, secrets) ! { assert(false) return }
+    assert(checked_older.subject == "bob")
+
+    // A token signed with the secret of another id is forged
+    let mixed = jwt.encode(claims_of(Map[String]{ "sub" => "eve" }), old_secret, jwt.Algorithm.hs256, 3600, "2026-09")
+    let forged = false
+    jwt.decode_with_secrets(mixed, secrets) ! { forged = error_is(E.code, signature) }
+    assert(forged)
+
+    // Without a `kid`, or with one the set does not hold: `key`
+    let plain = jwt.encode(claims_of(Map[String]{ "sub" => "ada" }), new_secret)
+    let no_id = false
+    jwt.decode_with_secrets(plain, secrets) ! { no_id = error_is(E.code, key) }
+    assert(no_id)
+    let retired = jwt.encode(claims_of(Map[String]{ "sub" => "ada" }), "an-old-secret", jwt.Algorithm.hs256, 3600, "2025-12")
+    let unknown = ""
+    jwt.decode_with_secrets(retired, secrets) ! { unknown = E.message }
+    assert(unknown == "No secret with id '2025-12' in the set")
+    assert(secrets.key_ids().length == 2)
+}
