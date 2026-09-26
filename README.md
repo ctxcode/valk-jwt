@@ -54,8 +54,7 @@ not a fixed shape.
 
 **The algorithm is taken from the caller, not from the token.** A token that says
 `{"alg":"none"}`, or that was re-signed with a weaker algorithm, is refused with `algorithm`
-rather than believed — that is the oldest hole in JWT libraries, and this package does not have
-it. Signatures are compared in constant time.
+rather than believed. Signatures are compared in constant time.
 
 ## Options
 
@@ -141,6 +140,4 @@ A secret and a key never stand in for each other: `decode` refuses the key algor
 ## Development
 
 `make test` runs the suite, `make example` runs the example, `make lint` checks the sources and
-`make docs` regenerates the API documentation. The tokens the suite writes, with every algorithm,
-were also checked against an independent implementation of the standard, and it reads tokens that
-implementation signed.
+`make docs` regenerates the API documentation.
