@@ -104,6 +104,14 @@ test "Expiry" {
     assert(claims.issued_at >= now - 5)
     assert(!claims.is_expired())
 
+    // The claims passed in are left as they were, so a token signed from them later carries no
+    // lifetime of an earlier one
+    let shared = claims_of(.{ "sub" => "user-1" })
+    jwt.encode(shared, SECRET, jwt.Algorithm.hs256, 60)
+    assert(!shared.has("exp") && !shared.has("iat"))
+    let lasting = jwt.decode(jwt.encode(shared, SECRET), SECRET) ! { assert(false) return }
+    assert(lasting.expires_at == 0 && lasting.subject == "user-1")
+
     // One that expired an hour ago
     let old = json.new_object()
     let document: json.Value = old

@@ -149,7 +149,8 @@ let token = jwt.encode(json.from(.{ "sub" => "user-1" }), secret, jwt.Algorithm.
 signed the token; see `SecretSet`.
 
 Only the HMAC algorithms sign with a secret: another algorithm panics, those sign with a
-private key through `sign`.
+private key through `sign`. An empty secret, or claims that are not a JSON object, panic as
+well.
 
 ### encode_of
 
@@ -171,7 +172,7 @@ Signs claims into a token with a private key, for the RSA, ECDSA and EdDSA algor
 `key_id` becomes the header's `kid`, so a verifier that holds several keys, such as a
 `KeySet`, can tell which one to use. Throws `algorithm` for an HMAC algorithm, which
 `encode` signs with a secret, and `key` when the key does not fit the algorithm, such as an
-EC key for RS256 or a P-384 key for ES256.
+EC key for RS256 or a P-384 key for ES256. Claims that are not a JSON object panic.
 
 ```valk
 let key = crypto.PrivateKey.from_pem(pem) ! panic("not a key")
