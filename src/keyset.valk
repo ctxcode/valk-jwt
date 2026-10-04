@@ -74,9 +74,7 @@ use valk.crypto
 // The `kid` in the header of `token`; throws `key` when it names none
 fn token_key_id(token: String) String !Error {
     let header_text = token.split(".").get(0) !? ""
-    let header = json.decode(base64url_decode(header_text) !>) ! {
-        throw .syntax { message: "The header of this token is not valid JSON" }
-    }
+    let header = read_object(header_text, "The header of this token is") !>
     let id = header.get("kid").string_value() !? ""
     if id.length == 0 : throw .key { message: "This token names no key ('kid')" }
     return id

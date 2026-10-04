@@ -22,12 +22,16 @@ use valk.crypto
 /// Reads base64url, with or without the padding. Throws `syntax` when the text is not that.
 + fn base64url_decode(text: String) String !Error {
     let out = ByteBuffer.new(text.length + 4)
+    let padding: uint = 0
     each text as ch {
+        if padding > 0 && ch != '=' : throw .syntax { message: "A part of the token is not valid base64url" }
         if ch == '-' : out.write_byte('+')
         else if ch == '_' : out.write_byte('/')
-        else if ch == '=' : continue
-        else : out.write_byte(ch)
+        else if ch == '=' : padding++
+        else if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') : out.write_byte(ch)
+        else : throw .syntax { message: "A part of the token is not valid base64url" }
     }
+    if padding > 2 : throw .syntax { message: "A part of the token is not valid base64url" }
     // The padding the encoder left off
     while out.length % 4 != 0 : out.write_byte('=')
     return crypto.base64_decode(out) ! {

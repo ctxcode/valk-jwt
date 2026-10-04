@@ -232,3 +232,102 @@ test "Rotating secrets by key id" {
     assert(unknown == "No secret with id '2025-12' in the set")
     assert(secrets.key_ids().length == 2)
 }
+
+// The error code a token is refused with, or "accepted"
+fn outcome(token: String, options: jwt.Options (.{})) String {
+    jwt.decode(token, SECRET, options) ! {
+        if error_is(E.code, syntax) : return "syntax"
+        if error_is(E.code, signature) : return "signature"
+        if error_is(E.code, algorithm) : return "algorithm"
+        if error_is(E.code, expired) : return "expired"
+        if error_is(E.code, not_yet_valid) : return "not_yet_valid"
+        if error_is(E.code, claim) : return "claim"
+        return "key"
+    }
+    return "accepted"
+}
+
+// A correctly signed HS256 token over a header and claims written by hand
+fn signed(header: String, claims: String) String {
+    let input = jwt.base64url_encode(header) + "." + jwt.base64url_encode(claims)
+    return input + "." + jwt.base64url_encode(crypto.Hmac.sign(crypto.HashAlgorithm.sha256, SECRET, input))
+}
+
+value HEADER ("{\"alg\":\"HS256\",\"typ\":\"JWT\"}")
+
+test "Malformed tokens are refused" {
+    let token = signed(HEADER, "{\"sub\":\"x\"}")
+    assert(outcome(token) == "accepted")
+    let parts = token.split(".")
+
+    // One token, one spelling: no padding, no standard base64 alphabet, no line breaks
+    assert(outcome(token + "=") == "syntax")
+    assert(outcome(token + "==") == "syntax")
+    assert(outcome(parts[0] + "." + parts[1] + "." + parts[2].range(0, 10) + "\n" + parts[2].range(10, parts[2].length - 10)) == "syntax")
+    let std = signed(HEADER, "{\"sub\":\"??>>>~~~\"}").split(".")
+    let std_payload = std[1].replace("-", "+").replace("_", "/")
+    let input = std[0] + "." + std_payload
+    assert(std_payload.contains("+"))
+    assert(outcome(input + "." + jwt.base64url_encode(crypto.Hmac.sign(crypto.HashAlgorithm.sha256, SECRET, input))) == "syntax")
+
+    // The header and the claims are JSON objects
+    assert(outcome(signed(HEADER, "[1]")) == "syntax")
+    assert(outcome(signed(HEADER, "\"x\"")) == "syntax")
+    assert(outcome(signed(HEADER, "")) == "syntax")
+    assert(outcome(signed("[\"HS256\"]", "{}")) == "syntax")
+    assert(outcome(signed(HEADER, "{\"sub\":")) == "syntax")
+
+    // Empty parts and the wrong number of them
+    assert(outcome(parts[0] + ".." + parts[2]) == "signature")
+    assert(outcome(parts[0] + "." + parts[1] + ".") == "signature")
+    assert(outcome(token + ".x") == "syntax")
+    assert(outcome(parts[0] + "." + parts[1]) == "syntax")
+
+    // Critical extensions are not understood, so refused
+    assert(outcome(signed("{\"alg\":\"HS256\",\"crit\":[\"exp\"],\"exp\":1}", "{}")) == "syntax")
+
+    // The algorithm is spelled exactly and must be there
+    assert(outcome(signed("{\"alg\":\"hs256\"}", "{}")) == "algorithm")
+    assert(outcome(signed("{\"alg\":\"HS256 \"}", "{}")) == "algorithm")
+    assert(outcome(signed("{\"typ\":\"JWT\"}", "{}")) == "algorithm")
+    assert(outcome(signed("{\"alg\":256}", "{}")) == "algorithm")
+
+    // An empty secret is refused rather than checked
+    let empty = false
+    jwt.decode(token, "") ! { empty = error_is(E.code, key) }
+    assert(empty)
+}
+
+test "Time claims at their limits" {
+    let now = (time.unix_ms() / 1000).to(int)
+    let with = fn(claims: String) String { return outcome(signed(HEADER, claims)) }
+
+    // exp is the first second the token is no longer valid
+    assert(with("{\"exp\":" + now + "}") == "expired")
+    assert(with("{\"exp\":" + (now + 5) + "}") == "accepted")
+    assert(outcome(signed(HEADER, "{\"exp\":" + (now - 10) + "}"), .{ leeway_seconds: 10 }) == "expired")
+    assert(outcome(signed(HEADER, "{\"exp\":" + (now - 10) + "}"), .{ leeway_seconds: 30 }) == "accepted")
+
+    // 0 and negative are long past, not absent
+    assert(with("{\"exp\":0}") == "expired")
+    assert(with("{\"exp\":-5}") == "expired")
+
+    // Fractions of a second are allowed, and huge values are far away
+    assert(with("{\"exp\":1000.5}") == "expired")
+    assert(with("{\"exp\":" + (now + 100) + ".5}") == "accepted")
+    assert(with("{\"exp\":1e30}") == "accepted")
+    assert(with("{\"nbf\":" + (now + 100) + ".5}") == "not_yet_valid")
+    assert(with("{\"nbf\":" + (now - 100) + ".5}") == "accepted")
+    assert(with("{\"nbf\":1e30}") == "not_yet_valid")
+
+    // A time claim that is not a number is refused, not ignored
+    assert(with("{\"exp\":\"abc\"}") == "claim")
+    assert(with("{\"exp\":\"1\"}") == "claim")
+    assert(with("{\"exp\":null}") == "claim")
+    assert(with("{\"nbf\":\"99999999999\"}") == "claim")
+    assert(with("{\"iat\":true}") == "claim")
+
+    let claims = jwt.decode_unverified(signed(HEADER, "{\"exp\":0}")) !!
+    assert(claims.is_expired())
+    assert(!(jwt.decode_unverified(signed(HEADER, "{}")) !!).is_expired())
+}

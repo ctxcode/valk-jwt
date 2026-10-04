@@ -77,8 +77,9 @@ use valk.time
 
     /// Returns whether the token is expired, allowing for `leeway_seconds` of clock difference.
     + fn is_expired(leeway_seconds: uint (0)) bool {
-        if this.expires_at == 0 : return false
-        return now_seconds() > this.expires_at + leeway_seconds
+        let exp = time_claim(this.data, "exp") ! return true
+        if !isset(exp) : return false
+        return now_seconds().to(float) >= exp + leeway_seconds.to(float)
     }
 
     /// Reads the claims into a class or struct of your own, as `json.Value.to_type` does.

@@ -23,7 +23,7 @@ class Session {
     role: String
 }
 
-let secret = core.getenv("SESSION_SECRET") !? ""
+let secret = core.getenv("SESSION_SECRET") ! panic("SESSION_SECRET is not set")
 
 // A token for an hour
 let token = jwt.encode_of(Session { sub: "user-1", role: "admin" }, secret, jwt.Algorithm.hs256, 3600)
@@ -49,8 +49,9 @@ not a fixed shape.
 | `algorithm` | the token was signed with another algorithm than the one expected |
 | `expired` | `exp` has passed |
 | `not_yet_valid` | `nbf` is still in the future |
-| `claim` | the audience, the issuer or a required `exp` is not what the caller asked for |
-| `syntax` | not three parts, not base64url, or not JSON |
+| `claim` | the audience, the issuer or a required `exp` is not what the caller asked for, or `exp`, `nbf` or `iat` is not a number |
+| `syntax` | not three parts, not base64url without padding, not JSON objects, or a `crit` header |
+| `key` | the secret is empty, or no key or secret fits the token |
 
 **The algorithm is taken from the caller, not from the token.** A token that says
 `{"alg":"none"}`, or that was re-signed with a weaker algorithm, is refused with `algorithm`

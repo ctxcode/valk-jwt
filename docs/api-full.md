@@ -18,8 +18,9 @@ Namespaces: [main](#main)
 
 Thrown when a token cannot be read or cannot be trusted.
 
-- `syntax`: the token is not three parts separated by dots, or a part is not valid base64url
-  or not valid JSON.
+- `syntax`: the token is not three parts separated by dots, a part is not base64url without
+  padding, the header or the claims are not a JSON object, or the header names `crit`
+  extensions.
 - `signature`: the signature does not belong to this token and this secret. A token that was
   changed by anyone reaches you as this.
 - `algorithm`: the token was signed with another algorithm than the one asked for, `none`
@@ -27,8 +28,8 @@ Thrown when a token cannot be read or cannot be trusted.
 - `expired`: `exp` has passed.
 - `not_yet_valid`: `nbf` lies in the future.
 - `claim`: a claim the caller asked for is missing or is not what it asked for, such as an
-  audience or an issuer that does not match.
-- `key`: no key to check the token with: a `KeySet` without the token's `kid`, or a key that
+  audience or an issuer that does not match, or an `exp`, `nbf` or `iat` that is not a number.
+- `key`: no key to check the token with: an empty secret, a `KeySet` without the token's `kid`, or a key that
   does not fit the algorithm, such as an EC key for RS256. Also thrown by `sign` for a key
   that cannot sign with the algorithm.
 
@@ -110,7 +111,8 @@ let claims = jwt.decode(token, secret) ! {
 ```
 
 This checks the HMAC algorithms, signed with a secret; tokens signed with a private key are
-checked by `verify`. An `options.algorithm` of another kind throws `algorithm`.
+checked by `verify`. An `options.algorithm` of another kind throws `algorithm`, and an empty
+secret throws `key`.
 
 ### decode_to
 

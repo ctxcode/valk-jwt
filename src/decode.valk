@@ -16,11 +16,14 @@ use valk.crypto
 /// ```
 ///
 /// This checks the HMAC algorithms, signed with a secret; tokens signed with a private key are
-/// checked by `verify`. An `options.algorithm` of another kind throws `algorithm`.
+/// checked by `verify`. An `options.algorithm` of another kind throws `algorithm`, and an empty
+/// secret throws `key`.
 + fn decode(token: String, secret: String, options: Options (.{})) Claims !Error {
     if !is_hmac(options.algorithm) {
         throw .algorithm { message: algorithm_name(options.algorithm) + " tokens are checked with a public key, through verify" }
     }
+    // Anyone can sign with an empty secret
+    if secret.length == 0 : throw .key { message: "The secret is empty" }
     let token_parts = split_token(token, options) !>
     if !crypto.Hmac.verify(hash_of(options.algorithm), secret, token_parts.signing_input, token_parts.signature) {
         throw .signature { message: "The signature of this token does not belong to it" }
@@ -89,8 +92,10 @@ fn split_token(token: String, options: Options) TokenParts !Error {
     let signature_text = parts.get(2) !? ""
 
     // The header says which algorithm the token claims to use; it is only trusted to disagree
-    let header = json.decode(base64url_decode(header_text) !>) ! {
-        throw .syntax { message: "The header of this token is not valid JSON" }
+    let header = read_object(header_text, "The header of this token is") !>
+    // RFC 7515: extensions marked critical must be understood, and this package knows none
+    if header.has("crit") {
+        throw .syntax { message: "This token names critical header extensions that are not supported" }
     }
     let named = header.get("alg").string_value() !? ""
     let expected = algorithm_name(options.algorithm)
@@ -101,8 +106,23 @@ fn split_token(token: String, options: Options) TokenParts !Error {
         header: header
         payload_text: payload_text
         signing_input: header_text + "." + payload_text
-        signature: base64url_decode(signature_text) !>
+        signature: decode_part(signature_text) !>
     }
+}
+
+// A part of a token: base64url without padding, nothing else
+fn decode_part(text: String) String !Error {
+    if text.contains("=") : throw .syntax { message: "A part of the token is not valid base64url" }
+    return base64url_decode(text) !>
+}
+
+// A header or the claims: a JSON object; `what` reads as "The header of this token is"
+fn read_object(text: String, what: String) json.Value !Error {
+    let value = json.decode(decode_part(text) !>) ! {
+        throw .syntax { message: what + " not valid JSON" }
+    }
+    if !value.is_object : throw .syntax { message: what + " not a JSON object" }
+    return value
 }
 
 // The claims of a token whose signature was found good, checked against `options`
@@ -132,9 +152,7 @@ fn accept(token_parts: TokenParts, options: Options) Claims !Error {
 }
 
 fn read_claims(payload_text: String) Claims !Error {
-    let data = json.decode(base64url_decode(payload_text) !>) ! {
-        throw .syntax { message: "The claims of this token are not valid JSON" }
-    }
+    let data = read_object(payload_text, "The claims of this token are") !>
     // `aud` is a string or a list of strings
     let audiences = Array[String]{}
     let aud = data.get("aud")
@@ -160,28 +178,40 @@ fn read_claims(payload_text: String) Claims !Error {
     }
 }
 
-// A time claim is a number of seconds; anything else counts as absent
+// A time claim as a field: whole seconds, 0 when absent or not after the epoch
 fn claim_seconds(data: json.Value, name: String) uint {
-    let value = data.get(name).int_value() !? 0
-    if value < 0 : return 0
+    let value = data.get(name).float_value() !? 0.0
+    if value < 1.0 : return 0
+    if value >= 18446744073709549568.0 : return 18446744073709549568.0.to(uint)
     return value.to(uint)
 }
 
-fn check_claims(claims: Claims, options: Options) !Error {
-    let now = now_seconds()
-    let leeway = options.leeway_seconds
+// A time claim for checking: null when absent; a value that is not a number is refused
+fn time_claim(data: json.Value, name: String) ?float !Error {
+    if !data.has(name) : return null
+    return data.get(name).float_value() ! {
+        throw .claim { message: "The '" + name + "' of this token is not a number of seconds" }
+    }
+}
 
-    if claims.expires_at > 0 {
-        if now > claims.expires_at + leeway {
+fn check_claims(claims: Claims, options: Options) !Error {
+    let now = now_seconds().to(float)
+    let leeway = options.leeway_seconds.to(float)
+
+    let exp = time_claim(claims.data, "exp") !>
+    if isset(exp) {
+        if now >= exp + leeway {
             throw .expired { message: "This token expired at " + claims.expires_at }
         }
     } else if options.require_expiry {
         throw .claim { message: "This token has no 'exp', which is required here" }
     }
 
-    if claims.not_before > 0 && now + leeway < claims.not_before {
+    let nbf = time_claim(claims.data, "nbf") !>
+    if isset(nbf) && now + leeway < nbf {
         throw .not_yet_valid { message: "This token is not valid before " + claims.not_before }
     }
+    time_claim(claims.data, "iat") !>
 
     if options.audience.length > 0 && !claims.audiences.contains(options.audience) {
         throw .claim { message: "This token is for '" + claims.audiences.join("', '") + "', not for '" + options.audience + "'" }
