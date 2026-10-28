@@ -4,7 +4,7 @@
 JSON Web Tokens for [Valk](https://valk-lang.dev): signing, and verifying that refuses everything
 it should. Purely written in Valk, with no os-package dependencies.
 
-Requires Valk 0.7.5 or newer.
+Requires Valk 0.8.1 or newer.
 
 ## Install
 

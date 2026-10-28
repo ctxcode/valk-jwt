@@ -70,7 +70,7 @@ fn signing_input(claims: json.Value, algorithm: Algorithm, expires_in_seconds: u
         // A copy, so the caller's claims do not gain `iat` and `exp`
         let copy = json.new_object()
         match claims {
-            json.ObjectValue as object => each object.values as value, name : copy.set(name, value)
+            Map[json.Value] as object => each object as value, name : copy.set(name, value)
             default => {}
         }
         let now = now_seconds()

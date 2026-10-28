@@ -157,7 +157,7 @@ fn read_claims(payload_text: String) Claims !Error {
     let audiences = Array[String]{}
     let aud = data.get("aud")
     if aud.is_array {
-        each aud.array.values as item {
+        each aud.array as item {
             let name = item.string_value() !? ""
             if name.length > 0 : audiences.append(name)
         }
