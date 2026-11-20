@@ -11,7 +11,7 @@ Namespaces: [main](#main)
 
 ```js
 // Thrown when a token cannot be read or cannot be trusted.
-+ error Error (syntax, signature, algorithm, expired, not_yet_valid, claim, key) payload { message: String }
++ error Error (syntax, signature, algorithm, expired, not_yet_valid, claim, key, fetch) payload { message: String }
 ```
 
 ## Enums for 'main'
@@ -90,6 +90,41 @@ Namespaces: [main](#main)
     + fn string(name: String) String
     // Reads the claims into a class or struct of your own, as `json.Value.to_type` does.
     + fn to_type[T]() T !Error
+}
+```
+
+```js
+// Fetches, caches and refreshes a provider's JWKS document for verifying OAuth and OpenID Connect tokens.
++ class JwksClient {
+    // The JWKS endpoint URL.
+    ~ url: String
+
+    // Closes any idle HTTP connections kept open by the client.
+    + fn close() void
+    // Returns the cached `KeySet` when it is still within `cache_ttl_seconds`, or fetches a fresh copy with `refresh`.
+    + fn keys() KeySet !Error
+    // Creates a client for the JWKS document at `url`. Nothing is fetched until `keys`, `refresh` or `verify` is called.
+    + static fn new(url: String, options: JwksOptions (.{})) JwksClient
+    // Fetches the JWKS document from `url`, parses it into a `KeySet` and updates the cache.
+    + fn refresh() KeySet !Error
+    // Verifies `token` against the JWKS keys, as `verify_with_keys` does.
+    + fn verify(token: String, options: Options) Claims !Error
+    // Reads a token into a class or struct of your own, checking it the way `verify` does.
+    + fn verify_to[T](token: String, options: Options) T !Error
+}
+```
+
+```js
+// Settings for `JwksClient`.
++ class JwksOptions {
+    // How long a fetched key set is cached before `keys` and `verify` fetch a fresh copy, in seconds. Set to 0 to disable TTL caching.
+    + cache_ttl_seconds: uint
+    // Extra HTTP client options for fetching the JWKS endpoint (such as TLS or headers).
+    + http_options: ?Options
+    // Minimum seconds between refreshes triggered by an unknown `kid` in `verify`, so tokens with bogus key ids cannot hammer the JWKS endpoint.
+    + min_refresh_seconds: uint
+    // Request timeout when fetching the JWKS document, in milliseconds. Ignored when `http_options` is set.
+    + timeout_ms: uint
 }
 ```
 

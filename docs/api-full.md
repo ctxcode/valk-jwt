@@ -11,7 +11,7 @@ Namespaces: [main](#main)
 
 ```js
 // Thrown when a token cannot be read or cannot be trusted.
-+ error Error (syntax, signature, algorithm, expired, not_yet_valid, claim, key) payload { message: String }
++ error Error (syntax, signature, algorithm, expired, not_yet_valid, claim, key, fetch) payload { message: String }
 ```
 
 ### Error
@@ -32,6 +32,8 @@ Thrown when a token cannot be read or cannot be trusted.
 - `key`: no key to check the token with: an empty secret, a `KeySet` without the token's `kid`, or a key that
   does not fit the algorithm, such as an EC key for RS256. Also thrown by `sign` for a key
   that cannot sign with the algorithm.
+- `fetch`: a JWKS document could not be fetched from its URL, or the server answered with a
+  non-2xx status.
 
 Every one of these means the token must be refused; they are apart so that a program can
 tell an expired session from a forged one.
@@ -325,6 +327,119 @@ Returns a claim as text, or "" when it is not there.
 #### to_type
 
 Reads the claims into a class or struct of your own, as `json.Value.to_type` does.
+
+```js
+// Fetches, caches and refreshes a provider's JWKS document for verifying OAuth and OpenID Connect tokens.
++ class JwksClient {
+    // The JWKS endpoint URL.
+    ~ url: String
+
+    // Closes any idle HTTP connections kept open by the client.
+    + fn close() void
+    // Returns the cached `KeySet` when it is still within `cache_ttl_seconds`, or fetches a fresh copy with `refresh`.
+    + fn keys() KeySet !Error
+    // Creates a client for the JWKS document at `url`. Nothing is fetched until `keys`, `refresh` or `verify` is called.
+    + static fn new(url: String, options: JwksOptions (.{})) JwksClient
+    // Fetches the JWKS document from `url`, parses it into a `KeySet` and updates the cache.
+    + fn refresh() KeySet !Error
+    // Verifies `token` against the JWKS keys, as `verify_with_keys` does.
+    + fn verify(token: String, options: Options) Claims !Error
+    // Reads a token into a class or struct of your own, checking it the way `verify` does.
+    + fn verify_to[T](token: String, options: Options) T !Error
+}
+```
+
+### JwksClient
+
+Fetches, caches and refreshes a provider's JWKS document for verifying OAuth and OpenID
+Connect tokens.
+
+Keys are cached for `JwksOptions.cache_ttl_seconds`. When `verify` sees a `kid` that is not
+in the cached `KeySet`, it refreshes once if at least `JwksOptions.min_refresh_seconds` have
+elapsed since the previous fetch attempt, then re-verifies — handling key rotation without
+letting bogus `kid`s hammer the endpoint.
+
+A `JwksClient` belongs to the thread that made it; coroutines on that thread can share it.
+
+```valk
+let jwks = jwt.JwksClient.new("https://accounts.google.com/.well-known/jwks.json")
+let claims = jwks.verify(token, jwt.Options { algorithm: jwt.Algorithm.rs256, issuer: "https://accounts.google.com" }) ! panic("%{E.message}")
+```
+
+#### url
+
+The JWKS endpoint URL.
+
+#### close
+
+Closes any idle HTTP connections kept open by the client.
+
+#### keys
+
+Returns the cached `KeySet` when it is still within `cache_ttl_seconds`, or fetches a
+fresh copy with `refresh`.
+
+#### new
+
+Creates a client for the JWKS document at `url`. Nothing is fetched until `keys`,
+`refresh` or `verify` is called.
+
+#### refresh
+
+Fetches the JWKS document from `url`, parses it into a `KeySet` and updates the cache.
+
+Throws `fetch` when the HTTP request fails or returns a non-2xx status, and `syntax` when
+the response body is not a valid JWKS document. On failure, any previously cached keys
+remain intact.
+
+#### verify
+
+Verifies `token` against the JWKS keys, as `verify_with_keys` does.
+
+Uses the cached `KeySet` while fresh; if the token's `kid` is missing from a cached set
+and `min_refresh_seconds` have elapsed since the last fetch attempt, refreshes once and
+re-verifies.
+
+#### verify_to
+
+Reads a token into a class or struct of your own, checking it the way `verify` does.
+
+```js
+// Settings for `JwksClient`.
++ class JwksOptions {
+    // How long a fetched key set is cached before `keys` and `verify` fetch a fresh copy, in seconds. Set to 0 to disable TTL caching.
+    + cache_ttl_seconds: uint
+    // Extra HTTP client options for fetching the JWKS endpoint (such as TLS or headers).
+    + http_options: ?Options
+    // Minimum seconds between refreshes triggered by an unknown `kid` in `verify`, so tokens with bogus key ids cannot hammer the JWKS endpoint.
+    + min_refresh_seconds: uint
+    // Request timeout when fetching the JWKS document, in milliseconds. Ignored when `http_options` is set.
+    + timeout_ms: uint
+}
+```
+
+### JwksOptions
+
+Settings for `JwksClient`.
+
+#### cache_ttl_seconds
+
+How long a fetched key set is cached before `keys` and `verify` fetch a fresh copy, in
+seconds. Set to 0 to disable TTL caching.
+
+#### http_options
+
+Extra HTTP client options for fetching the JWKS endpoint (such as TLS or headers).
+
+#### min_refresh_seconds
+
+Minimum seconds between refreshes triggered by an unknown `kid` in `verify`, so tokens
+with bogus key ids cannot hammer the JWKS endpoint.
+
+#### timeout_ms
+
+Request timeout when fetching the JWKS document, in milliseconds. Ignored when
+`http_options` is set.
 
 ```js
 // Public keys by key id, as an OAuth or OpenID Connect provider publishes them in a JWKS document, for `verify_with_keys`.

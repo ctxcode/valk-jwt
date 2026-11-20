@@ -4,7 +4,7 @@
 JSON Web Tokens for [Valk](https://valk-lang.dev): signing, and verifying that refuses everything
 it should. Purely written in Valk, with no os-package dependencies.
 
-Requires Valk 0.8.1 or newer.
+Requires Valk 0.8.10 or newer.
 
 ## Install
 
@@ -52,6 +52,7 @@ not a fixed shape.
 | `claim` | the audience, the issuer or a required `exp` is not what the caller asked for, or `exp`, `nbf` or `iat` is not a number |
 | `syntax` | not three parts, not base64url without padding, not JSON objects, or a `crit` header |
 | `key` | the secret is empty, or no key or secret fits the token |
+| `fetch` | a JWKS endpoint could not be reached or answered with a non-2xx status |
 
 **The algorithm is taken from the caller, not from the token.** A token that says
 `{"alg":"none"}`, or that was re-signed with a weaker algorithm, is refused with `algorithm`
@@ -133,6 +134,18 @@ document; `verify_with_keys` picks the key the token's `kid` names:
 ```rust
 let keys = jwt.KeySet.from_jwks(jwks_text) ! panic("%{E.message}")
 let claims = jwt.verify_with_keys(token, keys, jwt.Options { algorithm: jwt.Algorithm.rs256, issuer: "https://accounts.google.com" }) ! panic("%{E.message}")
+```
+
+`JwksClient` fetches and caches a provider's JWKS URL for you, and automatically refreshes once
+when a token arrives with an unknown `kid` (rate-limited by `min_refresh_seconds` so bogus key
+ids cannot hammer the endpoint):
+
+```rust
+let jwks = jwt.JwksClient.new("https://accounts.google.com/.well-known/jwks.json", .{
+    cache_ttl_seconds: 300     // cache duration in seconds (default 300)
+    min_refresh_seconds: 10    // cooldown between unknown-kid refreshes (default 10)
+})
+let claims = jwks.verify(token, jwt.Options { algorithm: jwt.Algorithm.rs256, issuer: "https://accounts.google.com" }) ! panic("%{E.message}")
 ```
 
 A secret and a key never stand in for each other: `decode` refuses the key algorithms and

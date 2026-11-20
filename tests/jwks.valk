@@ -1,0 +1,250 @@
+use jwt
+use valk.core
+use valk.crypto
+use valk.http
+use valk.time
+
+value JWKS_RSA_ONLY ("{\"keys\": [{\"kty\": \"RSA\", \"kid\": \"rsa-1\", \"use\": \"sig\", \"alg\": \"RS256\", \"n\": \"tU7rAMI9p-KnG1QLT5d2OjZ524mKZVl8S2rT5VoGACkkjUah9uxjh-ClXB8BLDWUmsXnG2WuMKOMQm62E8sud2I1ql-ype0RMDGRX7kBskFWzQU9RWcwbhVGLC-7Hi5t7wVBaI_nnOOhl3h6X_KLlAIFMGaaOtt-L81V37iQcMcnqDGSrfE25wg4WWoSzWaQbZ5eOGnH7ezFJr5dYbNO5EUFl53etEfFlSdm4WmDHQ0Zx6FoSQqcmcbMMg-tJPnDRoT7wo5hsRrm8fwy7DMnBVCzMXxTRHcfUTBlz8N9-PpMEm9tF5tx-syNR8_K1grTPaTwkSzzgPavSlLbTCVvQQ\", \"e\": \"AQAB\"}]}")
+value JWKS_RSA_AND_ED ("{\"keys\": [{\"kty\": \"RSA\", \"kid\": \"rsa-1\", \"use\": \"sig\", \"alg\": \"RS256\", \"n\": \"tU7rAMI9p-KnG1QLT5d2OjZ524mKZVl8S2rT5VoGACkkjUah9uxjh-ClXB8BLDWUmsXnG2WuMKOMQm62E8sud2I1ql-ype0RMDGRX7kBskFWzQU9RWcwbhVGLC-7Hi5t7wVBaI_nnOOhl3h6X_KLlAIFMGaaOtt-L81V37iQcMcnqDGSrfE25wg4WWoSzWaQbZ5eOGnH7ezFJr5dYbNO5EUFl53etEfFlSdm4WmDHQ0Zx6FoSQqcmcbMMg-tJPnDRoT7wo5hsRrm8fwy7DMnBVCzMXxTRHcfUTBlz8N9-PpMEm9tF5tx-syNR8_K1grTPaTwkSzzgPavSlLbTCVvQQ\", \"e\": \"AQAB\"}, {\"kty\": \"OKP\", \"kid\": \"ed-1\", \"crv\": \"Ed25519\", \"x\": \"EdtGj_j0LtN2jT66FEQmHZnIp2lViUs80MVk7qv06Io\"}]}")
+
+class JwksServerState {
+    mutex: atomic core.SyncMutex (.new())
+    body: String ("")
+    status: u16 (200)
+    fetches: uint (0)
+
+    fn set_response(body: String, status: u16 (200)) @threadsafe {
+        this.mutex.lock()
+        this.body = body
+        this.status = status
+        this.mutex.unlock()
+    }
+
+    fn fetch_count() uint @threadsafe {
+        this.mutex.lock()
+        let count = this.fetches
+        this.mutex.unlock()
+        return count
+    }
+
+    fn respond() http.Response @threadsafe {
+        this.mutex.lock()
+        this.fetches++
+        let body = this.body
+        let status = this.status
+        this.mutex.unlock()
+        return http.Response.json(body, status)
+    }
+}
+
+class JwksClaims {
+    sub: String
+    role: String
+}
+
+fn jwks_handler(state: atomic JwksServerState) atomic fn(http.Request)(http.Response) {
+    return fn(req: http.Request) http.Response {
+        if req.path == "/jwks.json" : return state.respond()
+        return http.Response.empty(404)
+    }
+}
+
+test "JWKS client: initial fetch, cache hit and explicit refresh" {
+    let state: atomic JwksServerState = .{}
+    state.set_response(JWKS_RSA_ONLY)
+    let server = http.Server.new("127.0.0.1", 19741, jwks_handler(state))
+    let running = co server.start(1)
+    time.sleep_ms(20)
+
+    let client = jwt.JwksClient.new("http://127.0.0.1:19741/jwks.json", .{
+        cache_ttl_seconds: 300
+        min_refresh_seconds: 10
+    })
+    assert(state.fetch_count() == 0)
+
+    // Initial verify fetches once
+    let claims = client.verify(PY_RS256, options_for(jwt.Algorithm.rs256)) ! { println(E.message) assert(false) return }
+    assert(claims.subject == "python" && claims.string("role") == "reader")
+    assert(state.fetch_count() == 1)
+
+    // Subsequent keys() and verify() hit the cache without refetching
+    let cached = client.keys() !!
+    assert(cached.key_ids().length == 1)
+    assert(state.fetch_count() == 1)
+    let typed = client.verify_to[JwksClaims](PY_RS256, options_for(jwt.Algorithm.rs256)) ! { println(E.message) assert(false) return }
+    assert(typed.sub == "python" && typed.role == "reader")
+    assert(state.fetch_count() == 1)
+
+    // Explicit refresh fetches updated keys immediately
+    state.set_response(JWKS_RSA_AND_ED)
+    let refreshed = client.refresh() !!
+    assert(refreshed.key_ids().length == 2)
+    assert(state.fetch_count() == 2)
+    let ed_claims = client.verify(PY_EDDSA, options_for(jwt.Algorithm.eddsa)) ! { println(E.message) assert(false) return }
+    assert(ed_claims.subject == "python")
+    assert(state.fetch_count() == 2)
+
+    client.close()
+    server.request_shutdown(1000)
+    await running !!
+}
+
+test "JWKS client: key rotation triggers automatic refresh on unknown kid" {
+    let state: atomic JwksServerState = .{}
+    state.set_response(JWKS_RSA_ONLY)
+    let server = http.Server.new("127.0.0.1", 19742, jwks_handler(state))
+    let running = co server.start(1)
+    time.sleep_ms(20)
+
+    let client = jwt.JwksClient.new("http://127.0.0.1:19742/jwks.json", .{
+        cache_ttl_seconds: 300
+        min_refresh_seconds: 0
+    })
+
+    // Seed cache with RSA only
+    assert((client.verify(PY_RS256, options_for(jwt.Algorithm.rs256)) !!).subject == "python")
+    assert(state.fetch_count() == 1)
+
+    // Provider rotates/adds ed-1; verify sees unknown kid and refreshes automatically
+    state.set_response(JWKS_RSA_AND_ED)
+    let claims = client.verify(PY_EDDSA, options_for(jwt.Algorithm.eddsa)) ! { println(E.message) assert(false) return }
+    assert(claims.subject == "python")
+    assert(state.fetch_count() == 2)
+
+    // Next verify with ed-1 is served from cache
+    assert((client.verify(PY_EDDSA, options_for(jwt.Algorithm.eddsa)) !!).subject == "python")
+    assert(state.fetch_count() == 2)
+
+    client.close()
+    server.request_shutdown(1000)
+    await running !!
+}
+
+test "JWKS client: cooldown throttles bogus kids and TTL expires cache" {
+    let state: atomic JwksServerState = .{}
+    state.set_response(JWKS_RSA_ONLY)
+    let server = http.Server.new("127.0.0.1", 19743, jwks_handler(state))
+    let running = co server.start(1)
+    time.sleep_ms(20)
+
+    let signer = crypto.PrivateKey.generate_ed25519() !!
+    let bogus1 = jwt.sign(key_claims(), signer, jwt.Algorithm.eddsa, 0, "bogus-1") !!
+    let bogus2 = jwt.sign(key_claims(), signer, jwt.Algorithm.eddsa, 0, "bogus-2") !!
+    let no_kid = jwt.sign(key_claims(), signer, jwt.Algorithm.eddsa) !!
+
+    let client = jwt.JwksClient.new("http://127.0.0.1:19743/jwks.json", .{
+        cache_ttl_seconds: 300
+        min_refresh_seconds: 1
+    })
+
+    // Token without kid fails before any HTTP fetch
+    let missing_kid = false
+    client.verify(no_kid, options_for(jwt.Algorithm.eddsa)) ! { missing_kid = error_is(E.code, key) }
+    assert(missing_kid)
+    assert(state.fetch_count() == 0)
+
+    // Initial fetch
+    assert((client.verify(PY_RS256, options_for(jwt.Algorithm.rs256)) !!).subject == "python")
+    assert(state.fetch_count() == 1)
+
+    // Bogus kids within cooldown window do NOT trigger refetches
+    let err1 = false
+    client.verify(bogus1, options_for(jwt.Algorithm.eddsa)) ! { err1 = error_is(E.code, key) }
+    assert(err1)
+    let err2 = false
+    client.verify(bogus2, options_for(jwt.Algorithm.eddsa)) ! { err2 = error_is(E.code, key) }
+    assert(err2)
+    assert(state.fetch_count() == 1)
+
+    // Once cooldown elapses, one refresh is allowed, then throttled again
+    time.sleep_ms(1100)
+    let err3 = false
+    client.verify(bogus1, options_for(jwt.Algorithm.eddsa)) ! { err3 = error_is(E.code, key) }
+    assert(err3)
+    assert(state.fetch_count() == 2)
+    let err4 = false
+    client.verify(bogus2, options_for(jwt.Algorithm.eddsa)) ! { err4 = error_is(E.code, key) }
+    assert(err4)
+    assert(state.fetch_count() == 2)
+
+    // Short TTL expires the cache and fetches again
+    let short_ttl = jwt.JwksClient.new("http://127.0.0.1:19743/jwks.json", .{
+        cache_ttl_seconds: 1
+        min_refresh_seconds: 10
+    })
+    short_ttl.keys() !!
+    assert(state.fetch_count() == 3)
+    short_ttl.keys() !!
+    assert(state.fetch_count() == 3)
+    time.sleep_ms(1100)
+    short_ttl.keys() !!
+    assert(state.fetch_count() == 4)
+
+    client.close()
+    short_ttl.close()
+    server.request_shutdown(1000)
+    await running !!
+}
+
+test "JWKS client: HTTP errors, invalid JWKS and failed refresh keeps cache" {
+    let state: atomic JwksServerState = .{}
+    state.set_response("server error", 500)
+    let server = http.Server.new("127.0.0.1", 19744, jwks_handler(state))
+    let running = co server.start(1)
+    time.sleep_ms(20)
+
+    let client = jwt.JwksClient.new("http://127.0.0.1:19744/jwks.json", .{
+        cache_ttl_seconds: 300
+        min_refresh_seconds: 0
+    })
+
+    // Non-2xx status throws fetch
+    let http_err = false
+    let http_msg = ""
+    client.keys() ! {
+        http_err = error_is(E.code, fetch)
+        http_msg = E.message
+    }
+    assert(http_err)
+    assert(http_msg.contains("500"))
+
+    // 404 path throws fetch
+    let not_found = jwt.JwksClient.new("http://127.0.0.1:19744/missing")
+    let nf_err = false
+    not_found.keys() ! { nf_err = error_is(E.code, fetch) }
+    assert(nf_err)
+    not_found.close()
+
+    // Invalid JSON body throws syntax
+    state.set_response("not json", 200)
+    let syntax_err = false
+    client.keys() ! { syntax_err = error_is(E.code, syntax) }
+    assert(syntax_err)
+
+    // Valid response populates cache; a subsequent failing refresh keeps cached keys usable
+    state.set_response(JWKS_RSA_ONLY, 200)
+    assert((client.verify(PY_RS256, options_for(jwt.Algorithm.rs256)) !!).subject == "python")
+    state.set_response("broken", 503)
+    let refresh_err = false
+    client.refresh() ! { refresh_err = error_is(E.code, fetch) }
+    assert(refresh_err)
+    assert((client.verify(PY_RS256, options_for(jwt.Algorithm.rs256)) !!).subject == "python")
+
+    // HMAC algorithm is refused without fetching
+    let before = state.fetch_count()
+    let alg_err = false
+    client.verify(PY_RS256, options_for(jwt.Algorithm.hs256)) ! { alg_err = error_is(E.code, algorithm) }
+    assert(alg_err)
+    assert(state.fetch_count() == before)
+
+    client.close()
+    server.request_shutdown(1000)
+    await running !!
+
+    // Connection failure against closed port throws fetch
+    let unreachable = jwt.JwksClient.new("http://127.0.0.1:19744/jwks.json", .{ timeout_ms: 1000 })
+    let conn_err = false
+    unreachable.keys() ! { conn_err = error_is(E.code, fetch) }
+    assert(conn_err)
+    unreachable.close()
+}

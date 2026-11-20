@@ -1,0 +1,120 @@
+use valk.http
+use valk.time
+
+/// Settings for `JwksClient`.
++ class JwksOptions {
+    /// How long a fetched key set is cached before `keys` and `verify` fetch a fresh copy, in
+    /// seconds. Set to 0 to disable TTL caching.
+    + cache_ttl_seconds: uint (300)
+    /// Minimum seconds between refreshes triggered by an unknown `kid` in `verify`, so tokens
+    /// with bogus key ids cannot hammer the JWKS endpoint.
+    + min_refresh_seconds: uint (10)
+    /// Request timeout when fetching the JWKS document, in milliseconds. Ignored when
+    /// `http_options` is set.
+    + timeout_ms: uint (10_000)
+    /// Extra HTTP client options for fetching the JWKS endpoint (such as TLS or headers).
+    + http_options: ?http.Options (null)
+}
+
+/// Fetches, caches and refreshes a provider's JWKS document for verifying OAuth and OpenID
+/// Connect tokens.
+///
+/// Keys are cached for `JwksOptions.cache_ttl_seconds`. When `verify` sees a `kid` that is not
+/// in the cached `KeySet`, it refreshes once if at least `JwksOptions.min_refresh_seconds` have
+/// elapsed since the previous fetch attempt, then re-verifies — handling key rotation without
+/// letting bogus `kid`s hammer the endpoint.
+///
+/// A `JwksClient` belongs to the thread that made it; coroutines on that thread can share it.
+///
+/// ```valk
+/// let jwks = jwt.JwksClient.new("https://accounts.google.com/.well-known/jwks.json")
+/// let claims = jwks.verify(token, jwt.Options { algorithm: jwt.Algorithm.rs256, issuer: "https://accounts.google.com" }) ! panic("%{E.message}")
+/// ```
++ class JwksClient {
+    /// The JWKS endpoint URL.
+    ~ url: String
+    - options: JwksOptions
+    - client: http.Client
+    - cached: ?KeySet (null)
+    - fetched_at_ms: uint (0)
+    - has_attempt: bool (false)
+    - last_attempt_ms: uint (0)
+
+    /// Creates a client for the JWKS document at `url`. Nothing is fetched until `keys`,
+    /// `refresh` or `verify` is called.
+    + static fn new(url: String, options: JwksOptions (.{})) JwksClient {
+        return JwksClient {
+            url: url
+            options: options
+            client: http.Client.new()
+        }
+    }
+
+    /// Returns the cached `KeySet` when it is still within `cache_ttl_seconds`, or fetches a
+    /// fresh copy with `refresh`.
+    + fn keys() KeySet !Error {
+        let cached = this.cached
+        if isset(cached) && this.cache_is_fresh() : return cached
+        return this.refresh() !>
+    }
+
+    /// Fetches the JWKS document from `url`, parses it into a `KeySet` and updates the cache.
+    ///
+    /// Throws `fetch` when the HTTP request fails or returns a non-2xx status, and `syntax` when
+    /// the response body is not a valid JWKS document. On failure, any previously cached keys
+    /// remain intact.
+    + fn refresh() KeySet !Error {
+        this.has_attempt = true
+        this.last_attempt_ms = time.mono_ms()
+        let req_opts = this.options.http_options ?? http.Options { timeout_ms: this.options.timeout_ms }
+        let res = this.client.get(this.url, req_opts) ! {
+            throw .fetch { message: "Failed to fetch JWKS from '" + this.url + "'" }
+        }
+        if res.status < 200 || res.status > 299 {
+            throw .fetch { message: "JWKS endpoint '" + this.url + "' returned HTTP " + res.status }
+        }
+        let set = KeySet.from_jwks(res.body) !>
+        this.cached = set
+        this.fetched_at_ms = time.mono_ms()
+        return set
+    }
+
+    /// Verifies `token` against the JWKS keys, as `verify_with_keys` does.
+    ///
+    /// Uses the cached `KeySet` while fresh; if the token's `kid` is missing from a cached set
+    /// and `min_refresh_seconds` have elapsed since the last fetch attempt, refreshes once and
+    /// re-verifies.
+    + fn verify(token: String, options: Options) Claims !Error {
+        if is_hmac(options.algorithm) {
+            throw .algorithm { message: algorithm_name(options.algorithm) + " tokens are checked with a secret, through decode" }
+        }
+        let id = token_key_id(token) !>
+        let from_cache = this.cache_is_fresh()
+        let set = this.keys() !>
+        if !isset(set.get(id)) && from_cache && this.can_refresh() {
+            set = this.refresh() !>
+        }
+        return verify_with_keys(token, set, options) !>
+    }
+
+    /// Reads a token into a class or struct of your own, checking it the way `verify` does.
+    + fn verify_to[T](token: String, options: Options) T !Error {
+        let claims = this.verify(token, options) !>
+        return claims.to_type[T]() !>
+    }
+
+    /// Closes any idle HTTP connections kept open by the client.
+    + fn close() {
+        this.client.close()
+    }
+
+    fn cache_is_fresh() bool {
+        if !isset(this.cached) || this.options.cache_ttl_seconds == 0 : return false
+        return time.mono_ms() - this.fetched_at_ms < this.options.cache_ttl_seconds * 1000
+    }
+
+    fn can_refresh() bool {
+        if !this.has_attempt || this.options.min_refresh_seconds == 0 : return true
+        return time.mono_ms() - this.last_attempt_ms >= this.options.min_refresh_seconds * 1000
+    }
+}
