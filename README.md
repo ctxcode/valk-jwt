@@ -4,7 +4,7 @@
 JSON Web Tokens for [Valk](https://valk-lang.dev): signing, and verifying that refuses everything
 it should. Purely written in Valk, with no os-package dependencies.
 
-Requires Valk 0.8.10 or newer.
+Requires Valk 0.9.1 or newer.
 
 ## Install
 
@@ -30,7 +30,7 @@ let token = jwt.encode_of(Session { sub: "user-1", role: "admin" }, secret, jwt.
 
 // Reading one, which checks the signature, the algorithm and the time
 let session = jwt.decode_to[Session](token, secret) ! {
-    if error_is(E.code, expired) : return "your session has ended"
+    if E is .expired : return "your session has ended"
     return "that token is not valid"
 }
 println(session.role)
@@ -43,7 +43,7 @@ not a fixed shape.
 
 `decode` refuses a token unless all of this holds, and says which one failed:
 
-| code | meaning |
+| variant | meaning |
 | --- | --- |
 | `signature` | the signature does not belong to this token and this secret |
 | `algorithm` | the token was signed with another algorithm than the one expected |

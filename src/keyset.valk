@@ -20,10 +20,10 @@ use valk.crypto
     /// this package uses. Throws `syntax` when the text is not a JWKS document.
     + static fn from_jwks(text: String) KeySet !Error {
         let document = json.decode(text) ! {
-            throw .syntax { message: "The key set is not valid JSON" }
+            throw .syntax("The key set is not valid JSON")
         }
         let list = document.get_array("keys") ! {
-            throw .syntax { message: "The key set has no 'keys' list" }
+            throw .syntax("The key set has no 'keys' list")
         }
         let set = KeySet {}
         each list as item {
@@ -62,11 +62,11 @@ use valk.crypto
 /// when the key's JWK is limited to another algorithm than `options.algorithm`.
 + fn verify_with_keys(token: String, keys: KeySet, options: Options) Claims !Error {
     let id = token_key_id(token) !>
-    let key = keys.get(id) ?! throw .key { message: "No key with id '" + id + "' in the key set" }
+    let key = keys.get(id) ?! throw .key("No key with id '" + id + "' in the key set")
     let limited = keys.algorithms.get(id) !? ""
     let expected = algorithm_name(options.algorithm)
     if limited.length > 0 && limited != expected {
-        throw .algorithm { message: "Key '" + id + "' is for " + limited + ", not for " + expected }
+        throw .algorithm("Key '" + id + "' is for " + limited + ", not for " + expected)
     }
     return verify(token, key, options) !>
 }
@@ -76,6 +76,6 @@ fn token_key_id(token: String) String !Error {
     let header_text = token.split(".").get(0) !? ""
     let header = read_object(header_text, "The header of this token is") !>
     let id = header.get("kid").string_value() !? ""
-    if id.length == 0 : throw .key { message: "This token names no key ('kid')" }
+    if id.length == 0 : throw .key("This token names no key ('kid')")
     return id
 }

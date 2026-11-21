@@ -7,13 +7,6 @@ Namespaces: [main](#main)
 
 # main
 
-## Errors for 'main'
-
-```js
-// Thrown when a token cannot be read or cannot be trusted.
-+ error Error (syntax, signature, algorithm, expired, not_yet_valid, claim, key, fetch) payload { message: String }
-```
-
 ## Enums for 'main'
 
 ```js
@@ -90,6 +83,23 @@ Namespaces: [main](#main)
     + fn string(name: String) String
     // Reads the claims into a class or struct of your own, as `json.Value.to_type` does.
     + fn to_type[T]() T !Error
+}
+```
+
+```js
+// Thrown when a token cannot be read or cannot be trusted.
++ union Error {
+    syntax(String)
+    signature(String)
+    algorithm(String)
+    expired(String)
+    not_yet_valid(String)
+    claim(String)
+    key(String)
+    fetch(String)
+
+    + get message: String
+    + fn to_string() String
 }
 ```
 

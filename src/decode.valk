@@ -10,7 +10,7 @@ use valk.crypto
 ///
 /// ```valk
 /// let claims = jwt.decode(token, secret) ! {
-///     if error_is(E.code, expired) : return "your session has ended"
+///     if E is .expired : return "your session has ended"
 ///     return "that token is not valid"
 /// }
 /// ```
@@ -20,13 +20,13 @@ use valk.crypto
 /// secret throws `key`.
 + fn decode(token: String, secret: String, options: Options (.{})) Claims !Error {
     if !is_hmac(options.algorithm) {
-        throw .algorithm { message: algorithm_name(options.algorithm) + " tokens are checked with a public key, through verify" }
+        throw .algorithm(algorithm_name(options.algorithm) + " tokens are checked with a public key, through verify")
     }
     // Anyone can sign with an empty secret
-    if secret.length == 0 : throw .key { message: "The secret is empty" }
+    if secret.length == 0 : throw .key("The secret is empty")
     let token_parts = split_token(token, options) !>
     if !crypto.Hmac.verify(hash_of(options.algorithm), secret, token_parts.signing_input, token_parts.signature) {
-        throw .signature { message: "The signature of this token does not belong to it" }
+        throw .signature("The signature of this token does not belong to it")
     }
     return accept(token_parts, options) !>
 }
@@ -44,11 +44,11 @@ use valk.crypto
 /// ```
 + fn verify(token: String, key: crypto.PublicKey, options: Options) Claims !Error {
     if is_hmac(options.algorithm) {
-        throw .algorithm { message: algorithm_name(options.algorithm) + " tokens are checked with a secret, through decode" }
+        throw .algorithm(algorithm_name(options.algorithm) + " tokens are checked with a secret, through decode")
     }
     let algorithm = options.algorithm
     if !key_fits(algorithm, key.key_type(), key.bits()) {
-        throw .key { message: "This key cannot check " + algorithm_name(algorithm) + " signatures" }
+        throw .key("This key cannot check " + algorithm_name(algorithm) + " signatures")
     }
     let token_parts = split_token(token, options) !>
     let signature = token_parts.signature
@@ -56,14 +56,14 @@ use valk.crypto
     if is_ecdsa(algorithm) {
         let size = (ec_bits(algorithm) + 7) / 8
         if signature.bytes != size * 2 {
-            throw .signature { message: "The signature of this token does not belong to it" }
+            throw .signature("The signature of this token does not belong to it")
         }
         signature = crypto.ecdsa_signature_from_raw(signature) ! {
-            throw .signature { message: "The signature of this token does not belong to it" }
+            throw .signature("The signature of this token does not belong to it")
         }
     }
     if !key.verify(signature_algorithm(algorithm), token_parts.signing_input, signature) {
-        throw .signature { message: "The signature of this token does not belong to it" }
+        throw .signature("The signature of this token does not belong to it")
     }
     return accept(token_parts, options) !>
 }
@@ -85,7 +85,7 @@ class TokenParts {
 fn split_token(token: String, options: Options) TokenParts !Error {
     let parts = token.split(".")
     if parts.length != 3 {
-        throw .syntax { message: "A token is three parts separated by dots, this one has " + parts.length }
+        throw .syntax("A token is three parts separated by dots, this one has " + parts.length)
     }
     let header_text = parts.get(0) !? ""
     let payload_text = parts.get(1) !? ""
@@ -95,12 +95,12 @@ fn split_token(token: String, options: Options) TokenParts !Error {
     let header = read_object(header_text, "The header of this token is") !>
     // RFC 7515: extensions marked critical must be understood, and this package knows none
     if header.has("crit") {
-        throw .syntax { message: "This token names critical header extensions that are not supported" }
+        throw .syntax("This token names critical header extensions that are not supported")
     }
     let named = header.get("alg").string_value() !? ""
     let expected = algorithm_name(options.algorithm)
     if named != expected {
-        throw .algorithm { message: "This token is signed with '" + named + "' where '" + expected + "' was expected" }
+        throw .algorithm("This token is signed with '" + named + "' where '" + expected + "' was expected")
     }
     return TokenParts {
         header: header
@@ -112,16 +112,16 @@ fn split_token(token: String, options: Options) TokenParts !Error {
 
 // A part of a token: base64url without padding, nothing else
 fn decode_part(text: String) String !Error {
-    if text.contains("=") : throw .syntax { message: "A part of the token is not valid base64url" }
+    if text.contains("=") : throw .syntax("A part of the token is not valid base64url")
     return base64url_decode(text) !>
 }
 
 // A header or the claims: a JSON object; `what` reads as "The header of this token is"
 fn read_object(text: String, what: String) json.Value !Error {
     let value = json.decode(decode_part(text) !>) ! {
-        throw .syntax { message: what + " not valid JSON" }
+        throw .syntax(what + " not valid JSON")
     }
-    if !value.is_object : throw .syntax { message: what + " not a JSON object" }
+    if !value.is_object : throw .syntax(what + " not a JSON object")
     return value
 }
 
@@ -146,7 +146,7 @@ fn accept(token_parts: TokenParts, options: Options) Claims !Error {
 + fn decode_unverified(token: String) Claims !Error {
     let parts = token.split(".")
     if parts.length != 3 {
-        throw .syntax { message: "A token is three parts separated by dots, this one has " + parts.length }
+        throw .syntax("A token is three parts separated by dots, this one has " + parts.length)
     }
     return read_claims(parts.get(1) !? "") !>
 }
@@ -190,7 +190,7 @@ fn claim_seconds(data: json.Value, name: String) uint {
 fn time_claim(data: json.Value, name: String) ?float !Error {
     if !data.has(name) : return null
     return data.get(name).float_value() ! {
-        throw .claim { message: "The '" + name + "' of this token is not a number of seconds" }
+        throw .claim("The '" + name + "' of this token is not a number of seconds")
     }
 }
 
@@ -201,22 +201,22 @@ fn check_claims(claims: Claims, options: Options) !Error {
     let exp = time_claim(claims.data, "exp") !>
     if isset(exp) {
         if now >= exp + leeway {
-            throw .expired { message: "This token expired at " + claims.expires_at }
+            throw .expired("This token expired at " + claims.expires_at)
         }
     } else if options.require_expiry {
-        throw .claim { message: "This token has no 'exp', which is required here" }
+        throw .claim("This token has no 'exp', which is required here")
     }
 
     let nbf = time_claim(claims.data, "nbf") !>
     if isset(nbf) && now + leeway < nbf {
-        throw .not_yet_valid { message: "This token is not valid before " + claims.not_before }
+        throw .not_yet_valid("This token is not valid before " + claims.not_before)
     }
     time_claim(claims.data, "iat") !>
 
     if options.audience.length > 0 && !claims.audiences.contains(options.audience) {
-        throw .claim { message: "This token is for '" + claims.audiences.join("', '") + "', not for '" + options.audience + "'" }
+        throw .claim("This token is for '" + claims.audiences.join("', '") + "', not for '" + options.audience + "'")
     }
     if options.issuer.length > 0 && claims.issuer != options.issuer {
-        throw .claim { message: "This token is from '" + claims.issuer + "', not from '" + options.issuer + "'" }
+        throw .claim("This token is from '" + claims.issuer + "', not from '" + options.issuer + "'")
     }
 }

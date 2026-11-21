@@ -7,37 +7,6 @@ Namespaces: [main](#main)
 
 # main
 
-## Errors for 'main'
-
-```js
-// Thrown when a token cannot be read or cannot be trusted.
-+ error Error (syntax, signature, algorithm, expired, not_yet_valid, claim, key, fetch) payload { message: String }
-```
-
-### Error
-
-Thrown when a token cannot be read or cannot be trusted.
-
-- `syntax`: the token is not three parts separated by dots, a part is not base64url without
-  padding, the header or the claims are not a JSON object, or the header names `crit`
-  extensions.
-- `signature`: the signature does not belong to this token and this secret. A token that was
-  changed by anyone reaches you as this.
-- `algorithm`: the token was signed with another algorithm than the one asked for, `none`
-  included.
-- `expired`: `exp` has passed.
-- `not_yet_valid`: `nbf` lies in the future.
-- `claim`: a claim the caller asked for is missing or is not what it asked for, such as an
-  audience or an issuer that does not match, or an `exp`, `nbf` or `iat` that is not a number.
-- `key`: no key to check the token with: an empty secret, a `KeySet` without the token's `kid`, or a key that
-  does not fit the algorithm, such as an EC key for RS256. Also thrown by `sign` for a key
-  that cannot sign with the algorithm.
-- `fetch`: a JWKS document could not be fetched from its URL, or the server answered with a
-  non-2xx status.
-
-Every one of these means the token must be refused; they are apart so that a program can
-tell an expired session from a forged one.
-
 ## Enums for 'main'
 
 ```js
@@ -107,7 +76,7 @@ attacks are built on. `exp` and `nbf` are checked as well, and the audience and 
 
 ```valk
 let claims = jwt.decode(token, secret) ! {
-    if error_is(E.code, expired) : return "your session has ended"
+    if E is .expired : return "your session has ended"
     return "that token is not valid"
 }
 ```
@@ -327,6 +296,47 @@ Returns a claim as text, or "" when it is not there.
 #### to_type
 
 Reads the claims into a class or struct of your own, as `json.Value.to_type` does.
+
+```js
+// Thrown when a token cannot be read or cannot be trusted.
++ union Error {
+    syntax(String)
+    signature(String)
+    algorithm(String)
+    expired(String)
+    not_yet_valid(String)
+    claim(String)
+    key(String)
+    fetch(String)
+
+    + get message: String
+    + fn to_string() String
+}
+```
+
+### Error
+
+Thrown when a token cannot be read or cannot be trusted.
+
+- `syntax`: the token is not three parts separated by dots, a part is not base64url without
+  padding, the header or the claims are not a JSON object, or the header names `crit`
+  extensions.
+- `signature`: the signature does not belong to this token and this secret. A token that was
+  changed by anyone reaches you as this.
+- `algorithm`: the token was signed with another algorithm than the one asked for, `none`
+  included.
+- `expired`: `exp` has passed.
+- `not_yet_valid`: `nbf` lies in the future.
+- `claim`: a claim the caller asked for is missing or is not what it asked for, such as an
+  audience or an issuer that does not match, or an `exp`, `nbf` or `iat` that is not a number.
+- `key`: no key to check the token with: an empty secret, a `KeySet` without the token's `kid`, or a key that
+  does not fit the algorithm, such as an EC key for RS256. Also thrown by `sign` for a key
+  that cannot sign with the algorithm.
+- `fetch`: a JWKS document could not be fetched from its URL, or the server answered with a
+  non-2xx status.
+
+Every one of these means the token must be refused; they are apart so that a program can
+tell an expired session from a forged one.
 
 ```js
 // Fetches, caches and refreshes a provider's JWKS document for verifying OAuth and OpenID Connect tokens.

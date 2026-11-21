@@ -19,6 +19,30 @@
 ///
 /// Every one of these means the token must be refused; they are apart so that a program can
 /// tell an expired session from a forged one.
-+ error Error (syntax, signature, algorithm, expired, not_yet_valid, claim, key, fetch) payload {
-    message: String
++ union Error {
+    syntax(String)
+    signature(String)
+    algorithm(String)
+    expired(String)
+    not_yet_valid(String)
+    claim(String)
+    key(String)
+    fetch(String)
+
+    + get message: String {
+        return match this : String {
+            .syntax(msg) => msg
+            .signature(msg) => msg
+            .algorithm(msg) => msg
+            .expired(msg) => msg
+            .not_yet_valid(msg) => msg
+            .claim(msg) => msg
+            .key(msg) => msg
+            .fetch(msg) => msg
+        }
+    }
+
+    + fn to_string() String $auto {
+        return this.message
+    }
 }

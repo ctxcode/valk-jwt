@@ -85,7 +85,7 @@ use valk.time
     /// Reads the claims into a class or struct of your own, as `json.Value.to_type` does.
     + fn to_type[T]() T !Error {
         return this.data.to_type[T]() ! {
-            throw .claim { message: "The claims of this token do not fit the type they were read into" }
+            throw .claim("The claims of this token do not fit the type they were read into")
         }
     }
 }

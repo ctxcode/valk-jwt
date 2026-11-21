@@ -139,7 +139,7 @@ test "JWKS client: cooldown throttles bogus kids and TTL expires cache" {
 
     // Token without kid fails before any HTTP fetch
     let missing_kid = false
-    client.verify(no_kid, options_for(jwt.Algorithm.eddsa)) ! { missing_kid = error_is(E.code, key) }
+    client.verify(no_kid, options_for(jwt.Algorithm.eddsa)) ! { missing_kid = E is .key }
     assert(missing_kid)
     assert(state.fetch_count() == 0)
 
@@ -149,21 +149,21 @@ test "JWKS client: cooldown throttles bogus kids and TTL expires cache" {
 
     // Bogus kids within cooldown window do NOT trigger refetches
     let err1 = false
-    client.verify(bogus1, options_for(jwt.Algorithm.eddsa)) ! { err1 = error_is(E.code, key) }
+    client.verify(bogus1, options_for(jwt.Algorithm.eddsa)) ! { err1 = E is .key }
     assert(err1)
     let err2 = false
-    client.verify(bogus2, options_for(jwt.Algorithm.eddsa)) ! { err2 = error_is(E.code, key) }
+    client.verify(bogus2, options_for(jwt.Algorithm.eddsa)) ! { err2 = E is .key }
     assert(err2)
     assert(state.fetch_count() == 1)
 
     // Once cooldown elapses, one refresh is allowed, then throttled again
     time.sleep_ms(1100)
     let err3 = false
-    client.verify(bogus1, options_for(jwt.Algorithm.eddsa)) ! { err3 = error_is(E.code, key) }
+    client.verify(bogus1, options_for(jwt.Algorithm.eddsa)) ! { err3 = E is .key }
     assert(err3)
     assert(state.fetch_count() == 2)
     let err4 = false
-    client.verify(bogus2, options_for(jwt.Algorithm.eddsa)) ! { err4 = error_is(E.code, key) }
+    client.verify(bogus2, options_for(jwt.Algorithm.eddsa)) ! { err4 = E is .key }
     assert(err4)
     assert(state.fetch_count() == 2)
 
@@ -202,7 +202,7 @@ test "JWKS client: HTTP errors, invalid JWKS and failed refresh keeps cache" {
     let http_err = false
     let http_msg = ""
     client.keys() ! {
-        http_err = error_is(E.code, fetch)
+        http_err = E is .fetch
         http_msg = E.message
     }
     assert(http_err)
@@ -211,14 +211,14 @@ test "JWKS client: HTTP errors, invalid JWKS and failed refresh keeps cache" {
     // 404 path throws fetch
     let not_found = jwt.JwksClient.new("http://127.0.0.1:19744/missing")
     let nf_err = false
-    not_found.keys() ! { nf_err = error_is(E.code, fetch) }
+    not_found.keys() ! { nf_err = E is .fetch }
     assert(nf_err)
     not_found.close()
 
     // Invalid JSON body throws syntax
     state.set_response("not json", 200)
     let syntax_err = false
-    client.keys() ! { syntax_err = error_is(E.code, syntax) }
+    client.keys() ! { syntax_err = E is .syntax }
     assert(syntax_err)
 
     // Valid response populates cache; a subsequent failing refresh keeps cached keys usable
@@ -226,14 +226,14 @@ test "JWKS client: HTTP errors, invalid JWKS and failed refresh keeps cache" {
     assert((client.verify(PY_RS256, options_for(jwt.Algorithm.rs256)) !!).subject == "python")
     state.set_response("broken", 503)
     let refresh_err = false
-    client.refresh() ! { refresh_err = error_is(E.code, fetch) }
+    client.refresh() ! { refresh_err = E is .fetch }
     assert(refresh_err)
     assert((client.verify(PY_RS256, options_for(jwt.Algorithm.rs256)) !!).subject == "python")
 
     // HMAC algorithm is refused without fetching
     let before = state.fetch_count()
     let alg_err = false
-    client.verify(PY_RS256, options_for(jwt.Algorithm.hs256)) ! { alg_err = error_is(E.code, algorithm) }
+    client.verify(PY_RS256, options_for(jwt.Algorithm.hs256)) ! { alg_err = E is .algorithm }
     assert(alg_err)
     assert(state.fetch_count() == before)
 
@@ -244,7 +244,7 @@ test "JWKS client: HTTP errors, invalid JWKS and failed refresh keeps cache" {
     // Connection failure against closed port throws fetch
     let unreachable = jwt.JwksClient.new("http://127.0.0.1:19744/jwks.json", .{ timeout_ms: 1000 })
     let conn_err = false
-    unreachable.keys() ! { conn_err = error_is(E.code, fetch) }
+    unreachable.keys() ! { conn_err = E is .fetch }
     assert(conn_err)
     unreachable.close()
 }

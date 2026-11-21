@@ -53,7 +53,8 @@ test "A token that was changed is refused" {
 
     // Another secret does not verify it
     jwt.decode(token, "another-secret") ! {
-        assert(error_is(E.code, signature))
+        assert(E is .signature)
+        assert(E.to_string() == E.message)
     }
 
     // Claims that were rewritten, with the signature left as it was
@@ -63,7 +64,7 @@ test "A token that was changed is refused" {
     document = document.set("role", json.new_string("admin"))
     let forged = (parts.get(0) !? "") + "." + jwt.base64url_encode(document.encode()) + "." + (parts.get(2) !? "")
     jwt.decode(forged, SECRET) ! {
-        assert(error_is(E.code, signature))
+        assert(E is .signature)
     }
 
     // A token that says it is unsigned
@@ -73,22 +74,22 @@ test "A token that was changed is refused" {
     header_value = header_value.set("typ", json.new_string("JWT"))
     let unsigned = jwt.base64url_encode(header_value.encode()) + "." + jwt.base64url_encode(document.encode()) + "."
     jwt.decode(unsigned, SECRET) ! {
-        assert(error_is(E.code, algorithm))
+        assert(E is .algorithm)
         assert(E.message.contains("none"))
     }
 
     // A token signed with another algorithm than the one expected
     let other = jwt.encode(claims_of(.{ "sub" => "user-1" }), SECRET, jwt.Algorithm.hs512)
     jwt.decode(other, SECRET) ! {
-        assert(error_is(E.code, algorithm))
+        assert(E is .algorithm)
     }
 
     // Nonsense
     jwt.decode("not-a-token", SECRET) ! {
-        assert(error_is(E.code, syntax))
+        assert(E is .syntax)
     }
     jwt.decode("a.b.c", SECRET) ! {
-        assert(error_is(E.code, syntax))
+        assert(E is .syntax)
         return
     }
     assert(false)
@@ -119,7 +120,7 @@ test "Expiry" {
     document = document.set("exp", json.new_int((now - 3600).to(int)))
     let expired = jwt.encode(document, SECRET)
     jwt.decode(expired, SECRET) ! {
-        assert(error_is(E.code, expired))
+        assert(E is .expired)
     }
     // Leeway does not stretch that far, but a second of clock difference is forgiven
     let just_gone = document.set("exp", json.new_int((now - 1).to(int)))
@@ -133,14 +134,14 @@ test "Expiry" {
     let future = document.set("exp", json.new_int((now + 3600).to(int)))
     future = future.set("nbf", json.new_int((now + 600).to(int)))
     jwt.decode(jwt.encode(future, SECRET), SECRET) ! {
-        assert(error_is(E.code, not_yet_valid))
+        assert(E is .not_yet_valid)
     }
 
     // A token without exp is accepted, unless the caller says otherwise
     let forever = jwt.encode(claims_of(.{ "sub" => "user-1" }), SECRET)
     assert((jwt.decode(forever, SECRET) ! { assert(false) return }).expires_at == 0)
     jwt.decode(forever, SECRET, .{ require_expiry: true }) ! {
-        assert(error_is(E.code, claim))
+        assert(E is .claim)
         return
     }
     assert(false)
@@ -162,11 +163,11 @@ test "Audience and issuer" {
     assert(claims.issuer == "the-login-service")
 
     jwt.decode(token, SECRET, .{ audience: "another-api" }) ! {
-        assert(error_is(E.code, claim))
+        assert(E is .claim)
         assert(E.message.contains("another-api"))
     }
     jwt.decode(token, SECRET, .{ issuer: "someone-else" }) ! {
-        assert(error_is(E.code, claim))
+        assert(E is .claim)
         return
     }
     assert(false)
@@ -185,7 +186,7 @@ test "An audience list" {
     assert(claims.audience == "web")
     assert(claims.audiences.length == 2)
     jwt.decode(token, SECRET, .{ audience: "admin" }) ! {
-        assert(error_is(E.code, claim))
+        assert(E is .claim)
         assert(E.message == "This token is for 'web', 'the-api', not for 'admin'")
         return
     }
@@ -226,13 +227,13 @@ test "Rotating secrets by key id" {
     // A token signed with the secret of another id is forged
     let mixed = jwt.encode(claims_of(Map[String]{ "sub" => "eve" }), old_secret, jwt.Algorithm.hs256, 3600, "2026-09")
     let forged = false
-    jwt.decode_with_secrets(mixed, secrets) ! { forged = error_is(E.code, signature) }
+    jwt.decode_with_secrets(mixed, secrets) ! { forged = E is .signature }
     assert(forged)
 
     // Without a `kid`, or with one the set does not hold: `key`
     let plain = jwt.encode(claims_of(Map[String]{ "sub" => "ada" }), new_secret)
     let no_id = false
-    jwt.decode_with_secrets(plain, secrets) ! { no_id = error_is(E.code, key) }
+    jwt.decode_with_secrets(plain, secrets) ! { no_id = E is .key }
     assert(no_id)
     let retired = jwt.encode(claims_of(Map[String]{ "sub" => "ada" }), "an-old-secret", jwt.Algorithm.hs256, 3600, "2025-12")
     let unknown = ""
@@ -241,15 +242,15 @@ test "Rotating secrets by key id" {
     assert(secrets.key_ids().length == 2)
 }
 
-// The error code a token is refused with, or "accepted"
+// The error variant a token is refused with, or "accepted"
 fn outcome(token: String, options: jwt.Options (.{})) String {
     jwt.decode(token, SECRET, options) ! {
-        if error_is(E.code, syntax) : return "syntax"
-        if error_is(E.code, signature) : return "signature"
-        if error_is(E.code, algorithm) : return "algorithm"
-        if error_is(E.code, expired) : return "expired"
-        if error_is(E.code, not_yet_valid) : return "not_yet_valid"
-        if error_is(E.code, claim) : return "claim"
+        if E is .syntax : return "syntax"
+        if E is .signature : return "signature"
+        if E is .algorithm : return "algorithm"
+        if E is .expired : return "expired"
+        if E is .not_yet_valid : return "not_yet_valid"
+        if E is .claim : return "claim"
         return "key"
     }
     return "accepted"
@@ -302,7 +303,7 @@ test "Malformed tokens are refused" {
 
     // An empty secret is refused rather than checked
     let empty = false
-    jwt.decode(token, "") ! { empty = error_is(E.code, key) }
+    jwt.decode(token, "") ! { empty = E is .key }
     assert(empty)
 }
 

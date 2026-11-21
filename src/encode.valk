@@ -39,19 +39,19 @@ use valk.crypto
 /// ```
 + fn sign(claims: json.Value, key: crypto.PrivateKey, algorithm: Algorithm, expires_in_seconds: uint (0), key_id: String ("")) String !Error {
     if is_hmac(algorithm) {
-        throw .algorithm { message: algorithm_name(algorithm) + " signs with a secret, through encode" }
+        throw .algorithm(algorithm_name(algorithm) + " signs with a secret, through encode")
     }
     if !key_fits(algorithm, key.key_type(), key.bits()) {
-        throw .key { message: "This key cannot sign with " + algorithm_name(algorithm) }
+        throw .key("This key cannot sign with " + algorithm_name(algorithm))
     }
     let input = signing_input(claims, algorithm, expires_in_seconds, key_id)
     let signature = key.sign(signature_algorithm(algorithm), input) ! {
-        throw .key { message: "Signing with " + algorithm_name(algorithm) + " failed" }
+        throw .key("Signing with " + algorithm_name(algorithm) + " failed")
     }
     // JWS writes ECDSA signatures as r and s side by side, not in DER
     if is_ecdsa(algorithm) {
         signature = crypto.ecdsa_signature_to_raw(signature, ec_curve(algorithm)) ! {
-            throw .key { message: "Signing with " + algorithm_name(algorithm) + " failed" }
+            throw .key("Signing with " + algorithm_name(algorithm) + " failed")
         }
     }
     return input + "." + base64url_encode(signature)

@@ -68,10 +68,10 @@ use valk.time
         this.last_attempt_ms = time.mono_ms()
         let req_opts = this.options.http_options ?? http.Options { timeout_ms: this.options.timeout_ms }
         let res = this.client.get(this.url, req_opts) ! {
-            throw .fetch { message: "Failed to fetch JWKS from '" + this.url + "'" }
+            throw .fetch("Failed to fetch JWKS from '" + this.url + "'")
         }
         if res.status < 200 || res.status > 299 {
-            throw .fetch { message: "JWKS endpoint '" + this.url + "' returned HTTP " + res.status }
+            throw .fetch("JWKS endpoint '" + this.url + "' returned HTTP " + res.status)
         }
         let set = KeySet.from_jwks(res.body) !>
         this.cached = set
@@ -86,7 +86,7 @@ use valk.time
     /// re-verifies.
     + fn verify(token: String, options: Options) Claims !Error {
         if is_hmac(options.algorithm) {
-            throw .algorithm { message: algorithm_name(options.algorithm) + " tokens are checked with a secret, through decode" }
+            throw .algorithm(algorithm_name(options.algorithm) + " tokens are checked with a secret, through decode")
         }
         let id = token_key_id(token) !>
         let from_cache = this.cache_is_fresh()
