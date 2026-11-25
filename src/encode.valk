@@ -22,7 +22,7 @@ use valk.crypto
     // Anyone can sign with an empty secret, and decode refuses it
     if secret.length == 0 : panic("The secret to sign with is empty")
     let input = signing_input(claims, algorithm, expires_in_seconds, key_id)
-    let signature = crypto.Hmac.sign(hash_of(algorithm), secret, input)
+    let signature = crypto.Hmac.sign(input, hash_of(algorithm), secret)
     return input + "." + base64url_encode(signature)
 }
 
@@ -45,7 +45,7 @@ use valk.crypto
         throw .key("This key cannot sign with " + algorithm_name(algorithm))
     }
     let input = signing_input(claims, algorithm, expires_in_seconds, key_id)
-    let signature = key.sign(signature_algorithm(algorithm), input) ! {
+    let signature = key.sign(input, signature_algorithm(algorithm)) ! {
         throw .key("Signing with " + algorithm_name(algorithm) + " failed")
     }
     // JWS writes ECDSA signatures as r and s side by side, not in DER

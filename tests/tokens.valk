@@ -259,7 +259,7 @@ fn outcome(token: String, options: jwt.Options (.{})) String {
 // A correctly signed HS256 token over a header and claims written by hand
 fn signed(header: String, claims: String) String {
     let input = jwt.base64url_encode(header) + "." + jwt.base64url_encode(claims)
-    return input + "." + jwt.base64url_encode(crypto.Hmac.sign(crypto.HashAlgorithm.sha256, SECRET, input))
+    return input + "." + jwt.base64url_encode(crypto.Hmac.sign(input, crypto.HashAlgorithm.sha256, SECRET))
 }
 
 value HEADER ("{\"alg\":\"HS256\",\"typ\":\"JWT\"}")
@@ -277,7 +277,7 @@ test "Malformed tokens are refused" {
     let std_payload = std[1].replace("-", "+").replace("_", "/")
     let input = std[0] + "." + std_payload
     assert(std_payload.contains("+"))
-    assert(outcome(input + "." + jwt.base64url_encode(crypto.Hmac.sign(crypto.HashAlgorithm.sha256, SECRET, input))) == "syntax")
+    assert(outcome(input + "." + jwt.base64url_encode(crypto.Hmac.sign(input, crypto.HashAlgorithm.sha256, SECRET))) == "syntax")
 
     // The header and the claims are JSON objects
     assert(outcome(signed(HEADER, "[1]")) == "syntax")

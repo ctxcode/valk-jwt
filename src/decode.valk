@@ -25,7 +25,7 @@ use valk.crypto
     // Anyone can sign with an empty secret
     if secret.length == 0 : throw .key("The secret is empty")
     let token_parts = split_token(token, options) !>
-    if !crypto.Hmac.verify(hash_of(options.algorithm), secret, token_parts.signing_input, token_parts.signature) {
+    if !crypto.Hmac.verify(token_parts.signing_input, token_parts.signature, hash_of(options.algorithm), secret) {
         throw .signature("The signature of this token does not belong to it")
     }
     return accept(token_parts, options) !>
@@ -62,7 +62,7 @@ use valk.crypto
             throw .signature("The signature of this token does not belong to it")
         }
     }
-    if !key.verify(signature_algorithm(algorithm), token_parts.signing_input, signature) {
+    if !key.verify(token_parts.signing_input, signature, signature_algorithm(algorithm)) {
         throw .signature("The signature of this token does not belong to it")
     }
     return accept(token_parts, options) !>
